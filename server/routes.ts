@@ -50,6 +50,16 @@ export async function registerRoutes(
     res.json(item);
   });
 
+  app.post(api.cart.clear.path, async (req, res) => {
+    await storage.clearCart(req.params.sessionId);
+    res.status(204).end();
+  });
+
+  app.post(api.orders.create.path, async (req, res) => {
+    const order = await storage.createOrder(req.body);
+    res.status(201).json(order);
+  });
+
   // Seed data
   await seedDatabase();
 

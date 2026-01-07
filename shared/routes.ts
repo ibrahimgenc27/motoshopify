@@ -1,6 +1,6 @@
 
 import { z } from 'zod';
-import { insertProductSchema, insertCartItemSchema, products, cartItems } from './schema';
+import { insertProductSchema, insertCartItemSchema, insertOrderSchema, products, cartItems } from './schema';
 
 export const api = {
   products: {
@@ -56,6 +56,23 @@ export const api = {
       input: z.object({ quantity: z.number() }),
       responses: {
         200: z.custom<typeof cartItems.$inferSelect>(),
+      },
+    },
+    clear: {
+      method: 'POST' as const,
+      path: '/api/cart/clear/:sessionId',
+      responses: {
+        204: z.void(),
+      },
+    }
+  },
+  checkout: {
+    process: {
+      method: 'POST' as const,
+      path: '/api/checkout',
+      input: insertOrderSchema,
+      responses: {
+        201: z.object({ orderId: z.number() }),
       },
     }
   }

@@ -3,10 +3,14 @@ import { db } from "./db";
 import {
   products,
   cartItems,
+  orders,
+  orderItems,
   type InsertProduct,
   type InsertCartItem,
+  type InsertOrder,
   type Product,
-  type CartItem
+  type CartItem,
+  type Order
 } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
 
@@ -20,6 +24,9 @@ export interface IStorage {
   addToCart(item: InsertCartItem): Promise<CartItem>;
   updateCartItem(id: number, quantity: number): Promise<CartItem>;
   removeFromCart(id: number): Promise<void>;
+  clearCart(sessionId: string): Promise<void>;
+  
+  createOrder(order: InsertOrder, items: { productId: number, quantity: number, price: number, selectedColor?: string | null }[]): Promise<number>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -42,7 +49,6 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getCartItems(sessionId: string): Promise<(CartItem & { product: Product })[]> {
-    // Join cart items with products
     const result = await db
       .select()
       .from(cartItems)
@@ -56,7 +62,6 @@ export class DatabaseStorage implements IStorage {
   }
 
   async addToCart(item: InsertCartItem): Promise<CartItem> {
-    // Check if item already exists for this session and product
     const existing = await db
       .select()
       .from(cartItems)
@@ -92,6 +97,25 @@ export class DatabaseStorage implements IStorage {
 
   async removeFromCart(id: number): Promise<void> {
     await db.delete(cartItems).where(eq(cartItems.id, id));
+  }
+
+  async clearCart(sessionId: string): Promise<void> {
+    await db.delete(cartItems).where(eq(cartItems.sessionId, sessionId));
+  }
+
+  async createOrder(order: InsertOrder, items: { productId: number, quantity: number, price: number, selectedColor?: string | null }[]): Promise<number> {
+    return await db.transaction(async (tx) => {
+      const [newOrder] = await tx.insert(orders).values(order).returning();
+      
+      await tx.insert(orderItems).values(
+        items.map(item => ({
+          orderId: newOrder.id,
+          ...item
+        }))
+      );
+
+      return newOrder.id;
+    });
   }
 }
 
