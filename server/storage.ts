@@ -1,38 +1,98 @@
-import { type User, type InsertUser } from "@shared/schema";
-import { randomUUID } from "crypto";
 
-// modify the interface with any CRUD methods
-// you might need
+import { db } from "./db";
+import {
+  products,
+  cartItems,
+  type InsertProduct,
+  type InsertCartItem,
+  type Product,
+  type CartItem
+} from "@shared/schema";
+import { eq, and } from "drizzle-orm";
 
 export interface IStorage {
-  getUser(id: string): Promise<User | undefined>;
-  getUserByUsername(username: string): Promise<User | undefined>;
-  createUser(user: InsertUser): Promise<User>;
+  getProducts(): Promise<Product[]>;
+  getProduct(id: number): Promise<Product | undefined>;
+  getProductsByCategory(category: string): Promise<Product[]>;
+  createProduct(product: InsertProduct): Promise<Product>;
+  
+  getCartItems(sessionId: string): Promise<(CartItem & { product: Product })[]>;
+  addToCart(item: InsertCartItem): Promise<CartItem>;
+  updateCartItem(id: number, quantity: number): Promise<CartItem>;
+  removeFromCart(id: number): Promise<void>;
 }
 
-export class MemStorage implements IStorage {
-  private users: Map<string, User>;
-
-  constructor() {
-    this.users = new Map();
+export class DatabaseStorage implements IStorage {
+  async getProducts(): Promise<Product[]> {
+    return await db.select().from(products);
   }
 
-  async getUser(id: string): Promise<User | undefined> {
-    return this.users.get(id);
+  async getProduct(id: number): Promise<Product | undefined> {
+    const [product] = await db.select().from(products).where(eq(products.id, id));
+    return product;
   }
 
-  async getUserByUsername(username: string): Promise<User | undefined> {
-    return Array.from(this.users.values()).find(
-      (user) => user.username === username,
-    );
+  async getProductsByCategory(category: string): Promise<Product[]> {
+    return await db.select().from(products).where(eq(products.category, category));
   }
 
-  async createUser(insertUser: InsertUser): Promise<User> {
-    const id = randomUUID();
-    const user: User = { ...insertUser, id };
-    this.users.set(id, user);
-    return user;
+  async createProduct(product: InsertProduct): Promise<Product> {
+    const [newProduct] = await db.insert(products).values(product).returning();
+    return newProduct;
+  }
+
+  async getCartItems(sessionId: string): Promise<(CartItem & { product: Product })[]> {
+    // Join cart items with products
+    const result = await db
+      .select()
+      .from(cartItems)
+      .innerJoin(products, eq(cartItems.productId, products.id))
+      .where(eq(cartItems.sessionId, sessionId));
+
+    return result.map(({ cart_items, products }) => ({
+      ...cart_items,
+      product: products
+    }));
+  }
+
+  async addToCart(item: InsertCartItem): Promise<CartItem> {
+    // Check if item already exists for this session and product
+    const existing = await db
+      .select()
+      .from(cartItems)
+      .where(
+        and(
+          eq(cartItems.sessionId, item.sessionId),
+          eq(cartItems.productId, item.productId),
+          eq(cartItems.selectedColor, item.selectedColor || null)
+        )
+      );
+
+    if (existing.length > 0) {
+      const [updated] = await db
+        .update(cartItems)
+        .set({ quantity: existing[0].quantity + (item.quantity || 1) })
+        .where(eq(cartItems.id, existing[0].id))
+        .returning();
+      return updated;
+    }
+
+    const [newItem] = await db.insert(cartItems).values(item).returning();
+    return newItem;
+  }
+
+  async updateCartItem(id: number, quantity: number): Promise<CartItem> {
+    const [updated] = await db
+      .update(cartItems)
+      .set({ quantity })
+      .where(eq(cartItems.id, id))
+      .returning();
+    return updated;
+  }
+
+  async removeFromCart(id: number): Promise<void> {
+    await db.delete(cartItems).where(eq(cartItems.id, id));
   }
 }
 
-export const storage = new MemStorage();
+export const storage = new DatabaseStorage();
