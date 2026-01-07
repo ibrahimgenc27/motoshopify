@@ -7,6 +7,8 @@ import NotFound from "@/pages/not-found";
 import Home from "@/pages/Home";
 import ProductList from "@/pages/ProductList";
 import ProductDetail from "@/pages/ProductDetail";
+import Checkout from "@/pages/Checkout";
+import CheckoutSuccess from "@/pages/CheckoutSuccess";
 
 function Router() {
   return (
@@ -14,11 +16,8 @@ function Router() {
       <Route path="/" component={Home} />
       <Route path="/products" component={ProductList} />
       <Route path="/products/:id" component={ProductDetail} />
-      
-      {/* Category routes can just use the ProductList with query params logic, 
-          but if wouter exact match is needed we can add them explicitly or handle inside ProductList 
-      */}
-      
+      <Route path="/checkout" component={Checkout} />
+      <Route path="/checkout/success" component={CheckoutSuccess} />
       <Route component={NotFound} />
     </Switch>
   );
