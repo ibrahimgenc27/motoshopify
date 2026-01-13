@@ -1,0 +1,26 @@
+<?xml version="1.0" standalone="no"?>
+<svg id="dark-logo" class="w-full max-w-[450px] h-auto" viewBox="0 0 450 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <!-- Speed Lines / Wings -->
+                        <path d="M45 40 C 20 40, 10 60, 5 80" stroke="#F97316" stroke-width="4" stroke-linecap="round" opacity="0.8"/>
+                        <path d="M35 50 C 15 50, 8 65, 5 85" stroke="#F97316" stroke-width="3" stroke-linecap="round" opacity="0.6"/>
+                        
+                        <!-- Wheel / Gear Icon -->
+                        <circle cx="80" cy="60" r="35" stroke="#FFFFFF" stroke-width="8"/>
+                        <circle cx="80" cy="60" r="12" fill="#F97316"/>
+                        <!-- Spokes/Details -->
+                        <path d="M80 35 L 80 85" stroke="#FFFFFF" stroke-width="4"/>
+                        <path d="M55 60 L 105 60" stroke="#FFFFFF" stroke-width="4"/>
+                        <path d="M62 42 L 98 78" stroke="#FFFFFF" stroke-width="4"/>
+                        <path d="M62 78 L 98 42" stroke="#FFFFFF" stroke-width="4"/>
+                        
+                        <!-- Stylized Bike Frame Top -->
+                        <path d="M80 35 Q 110 10 160 25 L 150 45" fill="none" stroke="#FFFFFF" stroke-width="6" stroke-linecap="round"/>
+                        
+                        <!-- Text -->
+                        <text x="130" y="75" font-family="'Russo One', sans-serif" font-size="52" fill="#FFFFFF" letter-spacing="-1">MOTO</text>
+                        <!-- Moved SHOP slightly left (x=285) -->
+                        <text x="285" y="75" font-family="'Russo One', sans-serif" font-size="52" fill="#F97316" font-style="italic" letter-spacing="-1">SHOP</text>
+                        
+                         <!-- Tagline -->
+                         <text x="132" y="98" font-family="'Open Sans', sans-serif" font-size="14" fill="#9CA3AF" letter-spacing="3" font-weight="600">PARÇA &amp; AKSESUAR</text>
+                    </svg>

@@ -7,14 +7,14 @@ export const products = pgTable("products", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   description: text("description").notNull(),
-  price: integer("price").notNull(), 
-  originalPrice: integer("original_price"), 
+  price: integer("price").notNull(),
+  originalPrice: integer("original_price"),
   image: text("image").notNull(),
-  images: text("images").array(), 
-  category: text("category").notNull(), 
-  specs: jsonb("specs").$type<Record<string, string>>(), 
+  images: text("images").array(),
+  category: text("category").notNull(),
+  specs: jsonb("specs").$type<Record<string, string>>(),
   stock: integer("stock").notNull().default(10),
-  colors: text("colors").array(), 
+  colors: text("colors").array(),
 });
 
 export const cartItems = pgTable("cart_items", {
@@ -27,6 +27,7 @@ export const cartItems = pgTable("cart_items", {
 
 export const orders = pgTable("orders", {
   id: serial("id").primaryKey(),
+  orderCode: text("order_code").notNull().unique(),
   sessionId: text("session_id").notNull(),
   customerName: text("customer_name").notNull(),
   customerEmail: text("customer_email").notNull(),
@@ -46,9 +47,22 @@ export const orderItems = pgTable("order_items", {
   selectedColor: text("selected_color"),
 });
 
+// Kullanıcılar tablosu
+export const users = pgTable("users", {
+  id: serial("id").primaryKey(),
+  email: text("email").notNull().unique(),
+  password: text("password").notNull(),
+  name: text("name").notNull(),
+  role: text("role").notNull().default("user"), // 'user' veya 'admin'
+  privacyAccepted: boolean("privacy_accepted").notNull().default(false),
+  commercialConsent: boolean("commercial_consent").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 export const insertProductSchema = createInsertSchema(products).omit({ id: true });
 export const insertCartItemSchema = createInsertSchema(cartItems).omit({ id: true });
 export const insertOrderSchema = createInsertSchema(orders).omit({ id: true, status: true, createdAt: true });
+export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true });
 
 export type Product = typeof products.$inferSelect;
 export type InsertProduct = z.infer<typeof insertProductSchema>;
@@ -57,3 +71,6 @@ export type InsertCartItem = z.infer<typeof insertCartItemSchema>;
 export type Order = typeof orders.$inferSelect;
 export type InsertOrder = z.infer<typeof insertOrderSchema>;
 export type OrderItem = typeof orderItems.$inferSelect;
+export type User = typeof users.$inferSelect;
+export type InsertUser = z.infer<typeof insertUserSchema>;
+

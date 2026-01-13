@@ -1,0 +1,8 @@
+<?xml version="1.0" standalone="no"?>
+<svg id="favicon-logo" class="h-20 w-20 mb-4" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="50" cy="50" r="45" fill="#1F2937"/>
+                    <circle cx="50" cy="50" r="35" stroke="#F97316" stroke-width="4"/>
+                    <path d="M35 50L65 50" stroke="white" stroke-width="4" stroke-linecap="round"/>
+                    <path d="M50 35L50 65" stroke="white" stroke-width="4" stroke-linecap="round"/>
+                    <circle cx="50" cy="50" r="8" fill="white"/>
+                </svg>
