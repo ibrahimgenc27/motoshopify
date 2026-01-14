@@ -3,14 +3,16 @@ import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
 import { Button } from "@/components/ui/button";
 import { useCart, useRemoveFromCart, useUpdateCartQuantity } from "@/hooks/use-cart";
+import { useAuth } from "@/hooks/use-auth";
 import { Minus, Plus, Trash2, ArrowLeft, ShoppingBag } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import { Link, useLocation } from "wouter";
 
 export default function Cart() {
-    const { data: cartItems, isLoading } = useCart();
-    const removeMutation = useRemoveFromCart();
-    const updateMutation = useUpdateCartQuantity();
+    const { user } = useAuth();
+    const { data: cartItems, isLoading } = useCart(user?.id);
+    const removeMutation = useRemoveFromCart(user?.id);
+    const updateMutation = useUpdateCartQuantity(user?.id);
     const [, setLocation] = useLocation();
 
     const subtotal = cartItems?.reduce((acc, item) => acc + (item.product.price * item.quantity), 0) || 0;

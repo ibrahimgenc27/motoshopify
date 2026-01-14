@@ -1,21 +1,34 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, buildUrl, type InsertCartItem } from "@shared/routes";
 import { nanoid } from "nanoid";
-import { useEffect, useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 
-// Helper to get or create session ID
-export function getSessionId() {
-  let sessionId = localStorage.getItem("cart_session_id");
+// Helper to get or create session ID - now user-specific
+export function getSessionId(userId?: number) {
+  // If user is logged in, use user-specific session key
+  const storageKey = userId ? `cart_session_id_user_${userId}` : "cart_session_id_guest";
+
+  let sessionId = localStorage.getItem(storageKey);
   if (!sessionId) {
     sessionId = nanoid();
-    localStorage.setItem("cart_session_id", sessionId);
+    localStorage.setItem(storageKey, sessionId);
   }
   return sessionId;
 }
 
-export function useCart() {
-  const sessionId = getSessionId();
+// Clear guest cart when user logs in (to prevent cart sharing)
+export function clearGuestSession() {
+  localStorage.removeItem("cart_session_id_guest");
+}
+
+// Get current user from localStorage or session
+function getCurrentUserId(): number | undefined {
+  // We'll check this from the auth state passed as parameter
+  return undefined;
+}
+
+export function useCart(userId?: number) {
+  const sessionId = getSessionId(userId);
 
   const query = useQuery({
     queryKey: [api.cart.list.path, sessionId],
@@ -30,10 +43,10 @@ export function useCart() {
   return { ...query, sessionId };
 }
 
-export function useAddToCart() {
+export function useAddToCart(userId?: number) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
-  const sessionId = getSessionId();
+  const sessionId = getSessionId(userId);
 
   return useMutation({
     mutationFn: async (data: Omit<InsertCartItem, "sessionId">) => {
@@ -66,9 +79,9 @@ export function useAddToCart() {
   });
 }
 
-export function useRemoveFromCart() {
+export function useRemoveFromCart(userId?: number) {
   const queryClient = useQueryClient();
-  const sessionId = getSessionId();
+  const sessionId = getSessionId(userId);
 
   return useMutation({
     mutationFn: async (id: number) => {
@@ -82,9 +95,9 @@ export function useRemoveFromCart() {
   });
 }
 
-export function useUpdateCartQuantity() {
+export function useUpdateCartQuantity(userId?: number) {
   const queryClient = useQueryClient();
-  const sessionId = getSessionId();
+  const sessionId = getSessionId(userId);
 
   return useMutation({
     mutationFn: async ({ id, quantity }: { id: number; quantity: number }) => {

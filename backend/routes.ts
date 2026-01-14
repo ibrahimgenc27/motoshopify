@@ -7,7 +7,9 @@ import { z } from "zod";
 import bcrypt from "bcrypt";
 import multer from "multer";
 import path from "path";
+
 import fs from "fs";
+import { insertOrderNoteSchema } from "@shared/schema";
 
 // Configure multer for file uploads
 const uploadDir = path.join(process.cwd(), "public", "uploads");
@@ -367,14 +369,251 @@ export async function registerRoutes(
   app.patch("/api/admin/orders/:id/status", async (req: Request, res: Response) => {
     await requireAdmin(req, res, async () => {
       try {
-        const { status } = req.body;
-        const order = await storage.updateOrderStatus(Number(req.params.id), status);
+        const { status, statusDetail } = req.body;
+        const order = await storage.updateOrderStatus(Number(req.params.id), status, statusDetail);
         res.json(order);
       } catch (err) {
         console.error("Update order status error:", err);
         res.status(500).json({ message: "Sipariş durumu güncellenirken bir hata oluştu" });
       }
     });
+  });
+
+
+  // Order Notes Management (admin only)
+  app.get("/api/admin/orders/:id/notes", async (req: Request, res: Response) => {
+    await requireAdmin(req, res, async () => {
+      try {
+        const notes = await storage.getOrderNotes(Number(req.params.id));
+        res.json(notes);
+      } catch (err) {
+        console.error("Get order notes error:", err);
+        res.status(500).json({ message: "Sipariş notları alınırken bir hata oluştu" });
+      }
+    });
+  });
+
+  app.post("/api/admin/orders/:id/notes", async (req: Request, res: Response) => {
+    await requireAdmin(req, res, async () => {
+      try {
+        const orderId = Number(req.params.id);
+        const noteData = insertOrderNoteSchema.parse({ ...req.body, orderId });
+        const note = await storage.createOrderNote(noteData);
+        res.status(201).json(note);
+      } catch (err) {
+        console.error("Create order note error:", err);
+        res.status(500).json({ message: "Sipariş notu eklenirken bir hata oluştu" });
+      }
+    });
+  });
+
+  app.put("/api/admin/orders/notes/:noteId", async (req: Request, res: Response) => {
+    await requireAdmin(req, res, async () => {
+      try {
+        const { note } = req.body;
+        const updated = await storage.updateOrderNote(Number(req.params.noteId), note);
+        res.json(updated);
+      } catch (err) {
+        console.error("Update order note error:", err);
+        res.status(500).json({ message: "Sipariş notu güncellenirken bir hata oluştu" });
+      }
+    });
+  });
+
+  app.delete("/api/admin/orders/notes/:noteId", async (req: Request, res: Response) => {
+    await requireAdmin(req, res, async () => {
+      try {
+        await storage.deleteOrderNote(Number(req.params.noteId));
+        res.status(204).end();
+      } catch (err) {
+        console.error("Delete order note error:", err);
+        res.status(500).json({ message: "Sipariş notu silinirken bir hata oluştu" });
+      }
+    });
+  });
+
+  // ===== PAYMENT NOTIFICATION ROUTES =====
+
+  // Create payment notification (user submits payment info)
+  app.post("/api/payment-notification", async (req: Request, res: Response) => {
+    try {
+      const { orderId, senderName, bankName, amount, transferDate } = req.body;
+
+      if (!orderId || !senderName || !bankName || !amount || !transferDate) {
+        return res.status(400).json({ message: "Tüm alanları doldurunuz" });
+      }
+
+      // Update order payment status to pending_approval
+      await storage.updateOrderPaymentStatus(orderId, "pending_approval");
+
+      const notification = await storage.createPaymentNotification({
+        orderId,
+        senderName,
+        bankName,
+        amount: Number(amount),
+        transferDate
+      });
+
+      res.status(201).json(notification);
+    } catch (err) {
+      console.error("Create payment notification error:", err);
+      res.status(500).json({ message: "Ödeme bildirimi oluşturulurken bir hata oluştu" });
+    }
+  });
+
+  // Get all payment notifications (admin only)
+  app.get("/api/admin/payment-notifications", async (req: Request, res: Response) => {
+    await requireAdmin(req, res, async () => {
+      try {
+        const notifications = await storage.getPaymentNotifications();
+
+        // Get order details for each notification
+        const notificationsWithOrders = await Promise.all(
+          notifications.map(async (notification) => {
+            const orderData = await storage.getOrderWithItems(notification.orderId);
+            return {
+              ...notification,
+              order: orderData?.order || null
+            };
+          })
+        );
+
+        res.json(notificationsWithOrders);
+      } catch (err) {
+        console.error("Get payment notifications error:", err);
+        res.status(500).json({ message: "Ödeme bildirimleri alınırken bir hata oluştu" });
+      }
+    });
+  });
+
+  // Approve payment notification (admin only)
+  app.post("/api/admin/payment-notifications/:id/approve", async (req: Request, res: Response) => {
+    await requireAdmin(req, res, async () => {
+      try {
+        const { adminNote } = req.body;
+        const result = await storage.approvePaymentNotification(Number(req.params.id), adminNote);
+        res.json(result);
+      } catch (err) {
+        console.error("Approve payment notification error:", err);
+        res.status(500).json({ message: "Ödeme bildirimi onaylanırken bir hata oluştu" });
+      }
+    });
+  });
+
+  // Reject payment notification (admin only)
+  app.post("/api/admin/payment-notifications/:id/reject", async (req: Request, res: Response) => {
+    await requireAdmin(req, res, async () => {
+      try {
+        const { adminNote } = req.body;
+        if (!adminNote) {
+          return res.status(400).json({ message: "Red sebebi gereklidir" });
+        }
+        const notification = await storage.rejectPaymentNotification(Number(req.params.id), adminNote);
+        res.json(notification);
+      } catch (err) {
+        console.error("Reject payment notification error:", err);
+        res.status(500).json({ message: "Ödeme bildirimi reddedilirken bir hata oluştu" });
+      }
+    });
+  });
+
+  // ===== REVIEW ROUTES (PostgreSQL) =====
+
+  // Get product reviews
+  app.get("/api/products/:id/reviews", async (req, res) => {
+    try {
+      const reviews = await storage.getProductReviews(Number(req.params.id));
+      res.json(reviews);
+    } catch (err) {
+      console.error("Get reviews error:", err);
+      res.status(500).json({ message: "Yorumlar alınırken bir hata oluştu" });
+    }
+  });
+
+  // Create review (requires auth)
+  app.post("/api/products/:id/reviews", async (req, res) => {
+    if (!req.session.userId) {
+      return res.status(401).json({ message: "Yorum yapmak için giriş yapmalısınız" });
+    }
+
+    try {
+      const user = await storage.getUserById(req.session.userId);
+      if (!user) {
+        return res.status(401).json({ message: "Kullanıcı bulunamadı" });
+      }
+
+      const reviewData = {
+        ...req.body,
+        userId: user.id,
+        productId: Number(req.params.id),
+        userName: user.name, // Yorumda görünecek isim
+        isApproved: true, // Şimdilik onaylı
+      };
+
+      const review = await storage.createReview(reviewData);
+      res.status(201).json(review);
+    } catch (err) {
+      console.error("Create review error:", err);
+      res.status(500).json({ message: "Yorum eklenirken bir hata oluştu" });
+    }
+  });
+
+  // Delete review (admin or owner)
+  app.delete("/api/reviews/:id", async (req, res) => {
+    if (!req.session.userId) {
+      return res.status(401).json({ message: "Giriş yapmalısınız" });
+    }
+
+    try {
+      const reviewId = Number(req.params.id);
+      const existingReview = await storage.getReview(reviewId);
+
+      if (!existingReview) {
+        return res.status(404).json({ message: "Yorum bulunamadı" });
+      }
+
+      const user = await storage.getUserById(req.session.userId);
+
+      // Check if user is the owner or admin
+      if (existingReview.userId !== req.session.userId && user?.role !== 'admin') {
+        return res.status(403).json({ message: "Bu işlem için yetkiniz yok" });
+      }
+
+      await storage.deleteReview(reviewId);
+      res.status(204).end();
+    } catch (err) {
+      console.error("Delete review error:", err);
+      res.status(500).json({ message: "Yorum silinirken bir hata oluştu" });
+    }
+  });
+
+  // Update review (owner or admin)
+  app.put("/api/reviews/:id", async (req, res) => {
+    if (!req.session.userId) {
+      return res.status(401).json({ message: "Giriş yapmalısınız" });
+    }
+
+    try {
+      const reviewId = Number(req.params.id);
+      const existingReview = await storage.getReview(reviewId);
+
+      if (!existingReview) {
+        return res.status(404).json({ message: "Yorum bulunamadı" });
+      }
+
+      const user = await storage.getUserById(req.session.userId);
+
+      // Check if user is the owner or admin
+      if (existingReview.userId !== req.session.userId && user?.role !== 'admin') {
+        return res.status(403).json({ message: "Bu işlem için yetkiniz yok" });
+      }
+
+      const updatedReview = await storage.updateReview(reviewId, req.body);
+      res.json(updatedReview);
+    } catch (err) {
+      console.error("Update review error:", err);
+      res.status(500).json({ message: "Yorum güncellenirken bir hata oluştu" });
+    }
   });
 
   // Seed data (including admin user)

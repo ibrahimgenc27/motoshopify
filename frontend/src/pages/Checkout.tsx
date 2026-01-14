@@ -19,8 +19,8 @@ import { CreditCard, Building2 } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 
 export default function Checkout() {
-  const { data: cartItems, sessionId } = useCart();
   const { user } = useAuth();
+  const { data: cartItems, sessionId } = useCart(user?.id);
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const [paymentMethod, setPaymentMethod] = useState("credit-card");
@@ -70,6 +70,20 @@ export default function Checkout() {
       return v.substring(0, 2) + '/' + v.substring(2, 4);
     }
     return v;
+  };
+
+  // Format phone number as 0XXX XXX XX XX
+  const formatPhoneNumber = (value: string) => {
+    const v = value.replace(/\s+/g, '').replace(/[^0-9]/gi, '');
+    if (v.length <= 4) {
+      return v;
+    } else if (v.length <= 7) {
+      return v.substring(0, 4) + ' ' + v.substring(4);
+    } else if (v.length <= 9) {
+      return v.substring(0, 4) + ' ' + v.substring(4, 7) + ' ' + v.substring(7);
+    } else {
+      return v.substring(0, 4) + ' ' + v.substring(4, 7) + ' ' + v.substring(7, 9) + ' ' + v.substring(9, 11);
+    }
   };
 
   async function onSubmit(data: any) {
@@ -126,17 +140,36 @@ export default function Checkout() {
         items: orderItems,
       });
 
-      const { orderCode } = await res.json();
+      const { orderCode, id } = await res.json();
 
       // Cart is automatically cleared by the backend upon successful order creation
       queryClient.invalidateQueries({ queryKey: [`/api/cart/${sessionId}`] });
 
-      toast({
-        title: "Sipariş Başarılı",
-        description: "Siparişiniz başarıyla alındı. Teşekkür ederiz!",
-      });
+      // Havale/EFT seçildiyse OrderComplete sayfasına yönlendir
+      if (paymentMethod === "transfer") {
+        // Sipariş bilgilerini localStorage'a kaydet
+        localStorage.setItem("lastOrder", JSON.stringify({
+          orderCode,
+          orderId: id,
+          totalAmount: total,
+          customerEmail: data.customerEmail,
+        }));
 
-      setLocation(`/checkout/success?code=${orderCode}`);
+        toast({
+          title: "Sipariş Alındı!",
+          description: "Lütfen havale bilgilerini inceleyin.",
+        });
+
+        setLocation("/order-complete");
+      } else {
+        // Kredi kartı ile ödeme - normal akış
+        toast({
+          title: "Sipariş Başarılı",
+          description: "Siparişiniz başarıyla alındı. Teşekkür ederiz!",
+        });
+
+        setLocation(`/checkout/success?code=${orderCode}`);
+      }
     } catch (err) {
       toast({
         title: "Hata",
@@ -218,7 +251,13 @@ export default function Checkout() {
                         <FormItem>
                           <FormLabel>Telefon</FormLabel>
                           <FormControl>
-                            <Input placeholder="0555 555 55 55" {...field} className="rounded-none h-12" />
+                            <Input
+                              placeholder="0555 555 55 55"
+                              value={field.value}
+                              onChange={(e) => field.onChange(formatPhoneNumber(e.target.value))}
+                              maxLength={14}
+                              className="rounded-none h-12"
+                            />
                           </FormControl>
                           <FormMessage />
                         </FormItem>
@@ -322,9 +361,10 @@ export default function Checkout() {
               {/* Bank Transfer Info */}
               {paymentMethod === "transfer" && (
                 <div className="mt-6 p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 text-sm">
-                  <p className="font-medium text-blue-800 dark:text-blue-300 mb-2">Havale Bilgileri</p>
+                  <p className="font-medium text-blue-800 dark:text-blue-300 mb-2">🏦 Havale / EFT ile Ödeme</p>
                   <p className="text-blue-700 dark:text-blue-400">
-                    Sipariş onayından sonra havale bilgileri e-posta ile gönderilecektir.
+                    Siparişi tamamladıktan sonra IBAN bilgileri gösterilecek ve e-posta ile gönderilecektir.
+                    Ödemenizi yaptıktan sonra "Siparişlerim" sayfasından ödeme bildirimi yapmanız gerekmektedir.
                   </p>
                 </div>
               )}

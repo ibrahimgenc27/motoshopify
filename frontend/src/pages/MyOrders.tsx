@@ -14,7 +14,11 @@ import {
     ShoppingCart,
     ArrowRight,
     MapPin,
-    Calendar
+    Calendar,
+    Package2,
+    RotateCcw,
+    Info,
+    User
 } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -36,16 +40,20 @@ interface Order {
         customerEmail: string;
         totalAmount: number;
         status: string;
+        statusDetail?: string;
+        paymentStatus?: string;
+        paymentMethod?: string;
         createdAt: string;
         address: string;
     };
     items: OrderItem[];
 }
 
-const steps = [
-    { id: "pending", label: "Sipariş Alındı", icon: Clock, color: "text-yellow-600 bg-yellow-100 border-yellow-200" },
+// Progress bar steps - only normal flow statuses (no pending, cancelled, returned)
+const progressSteps = [
     { id: "processing", label: "Hazırlanıyor", icon: Package, color: "text-blue-600 bg-blue-100 border-blue-200" },
-    { id: "shipped", label: "Kargoya Verildi", icon: Truck, color: "text-purple-600 bg-purple-100 border-purple-200" },
+    { id: "shipped", label: "Kargoda", icon: Truck, color: "text-purple-600 bg-purple-100 border-purple-200" },
+    { id: "outForDelivery", label: "Dağıtıma Çıktı", icon: Package2, color: "text-indigo-600 bg-indigo-100 border-indigo-200" },
     { id: "delivered", label: "Teslim Edildi", icon: CheckCircle, color: "text-green-600 bg-green-100 border-green-200" },
 ];
 
@@ -55,25 +63,20 @@ function OrderCard({ orderData, displayNumber }: { orderData: any, displayNumber
     const [progressWidth, setProgressWidth] = useState(0);
 
     useEffect(() => {
-        // Calculate progress percentage
-        if (order.status === 'cancelled') {
+        // Only calculate progress for normal flow statuses
+        const normalFlowStatuses = ["processing", "shipped", "outForDelivery", "delivered"];
+        if (!normalFlowStatuses.includes(order.status)) {
             setProgressWidth(0);
             return;
         }
 
-        const statusOrder = ["pending", "processing", "shipped", "delivered"];
-        const currentIndex = statusOrder.indexOf(order.status);
-
-        // Calculate width: 0% to 100%
-        // 4 steps: 0 -> 12.5%, 1 -> 37.5%, 2 -> 62.5%, 3 -> 87.5% (to center on dots)
-        // Actually full width is better
+        const currentIndex = normalFlowStatuses.indexOf(order.status);
         let pct = 0;
         if (currentIndex === 0) pct = 15;
         else if (currentIndex === 1) pct = 40;
         else if (currentIndex === 2) pct = 65;
         else if (currentIndex >= 3) pct = 100;
 
-        // Add a small delay for animation effect
         const timer = setTimeout(() => {
             setProgressWidth(pct);
         }, 100);
@@ -83,7 +86,10 @@ function OrderCard({ orderData, displayNumber }: { orderData: any, displayNumber
 
     if (!order || !order.id) return null;
 
-    const currentStatusIndex = ["pending", "processing", "shipped", "delivered"].indexOf(order.status);
+    const currentStatusIndex = ["processing", "shipped", "outForDelivery", "delivered"].indexOf(order.status);
+    // İlerleme çubuğunu sadece ödeme tamamlanmış siparisler için göster
+    const isPaymentCompleted = order.paymentStatus === 'paid';
+    const shouldShowProgress = isPaymentCompleted && ["processing", "shipped", "outForDelivery", "delivered"].includes(order.status);
 
     return (
         <Card className="overflow-hidden border-gray-200 shadow-sm hover:shadow-md transition-all duration-300">
@@ -97,7 +103,33 @@ function OrderCard({ orderData, displayNumber }: { orderData: any, displayNumber
                             </h2>
                             {order.status === 'cancelled' && (
                                 <span className="bg-red-100 text-red-700 px-3 py-1 rounded-full text-xs font-bold animate-pulse">
-                                    İptal Edildi
+                                    ❌ İptal Edildi
+                                </span>
+                            )}
+                            {order.status === 'returned' && (
+                                <span className="bg-orange-100 text-orange-700 px-3 py-1 rounded-full text-xs font-bold">
+                                    🔄 İade Edildi
+                                </span>
+                            )}
+                            {/* Ödeme durumu badge */}
+                            {(order.paymentStatus === 'unpaid' || order.paymentStatus === undefined) && order.status !== 'cancelled' && (
+                                <span className="bg-yellow-100 text-yellow-700 px-3 py-1 rounded-full text-xs font-bold">
+                                    💳 Ödeme Bekleniyor
+                                </span>
+                            )}
+                            {order.paymentStatus === 'rejected' && order.status !== 'cancelled' && (
+                                <span className="bg-red-100 text-red-700 px-3 py-1 rounded-full text-xs font-bold">
+                                    ⛔ Ödeme Reddedildi
+                                </span>
+                            )}
+                            {order.paymentStatus === 'pending_approval' && order.status !== 'cancelled' && (
+                                <span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-xs font-bold">
+                                    ⏳ Onay Bekleniyor
+                                </span>
+                            )}
+                            {order.paymentStatus === 'paid' && (
+                                <span className="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-bold">
+                                    ✅ Ödendi
                                 </span>
                             )}
                         </div>
@@ -124,26 +156,30 @@ function OrderCard({ orderData, displayNumber }: { orderData: any, displayNumber
                         <div className="text-2xl font-black text-gray-900 tracking-tight">
                             {order.totalAmount.toLocaleString("tr-TR")} ₺
                         </div>
+                        {/* Ödeme bildirimi butonu - Rejected durumunda da göster */}
+                        {(order.paymentStatus === 'unpaid' || order.paymentStatus === undefined || order.paymentStatus === 'rejected') && order.status !== 'cancelled' && (
+                            <Link href="/payment-notification">
+                                <Button className="mt-2 bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-1 h-8">
+                                    💳 Ödeme Bildir
+                                </Button>
+                            </Link>
+                        )}
                     </div>
                 </div>
             </div>
 
             <CardContent className="p-0">
-                {/* Animated Progress Timeline */}
-                {order.status !== 'cancelled' && (
+                {/* Progress Bar - Only for Normal Flow */}
+                {shouldShowProgress && (
                     <div className="p-8 border-b bg-white">
                         <div className="relative mx-4">
-                            {/* Background Line */}
                             <div className="absolute top-5 left-0 w-full h-1 bg-gray-100 rounded-full" />
-
-                            {/* Animated Progress Line */}
                             <div
                                 className="absolute top-5 left-0 h-1 bg-green-600 rounded-full transition-all duration-1000 ease-out"
                                 style={{ width: `${progressWidth}%` }}
                             />
-
                             <div className="flex justify-between w-full relative z-10">
-                                {steps.map((step, idx) => {
+                                {progressSteps.map((step, idx) => {
                                     const Icon = step.icon;
                                     const isCompleted = currentStatusIndex >= idx;
                                     const isCurrent = currentStatusIndex === idx;
@@ -168,6 +204,176 @@ function OrderCard({ orderData, displayNumber }: { orderData: any, displayNumber
                                     );
                                 })}
                             </div>
+                            {/* Status Detail / Cancellation or Return Reason */}
+                            {(() => {
+                                // @ts-ignore - notes property is added in backend response but not in shared type yet
+                                const cancellationNote = order.notes?.find((n: any) => n.noteType === 'cancellation');
+                                // @ts-ignore
+                                const returnNote = order.notes?.find((n: any) => n.noteType === 'return');
+                                const displayNote = cancellationNote?.note || returnNote?.note || order.statusDetail;
+
+                                if (displayNote) {
+                                    return (
+                                        <div className={`mt-6 p-4 border rounded-lg ${order.status === 'cancelled' || cancellationNote ? 'bg-red-50 border-red-200' :
+                                            order.status === 'returned' || returnNote ? 'bg-orange-50 border-orange-200' :
+                                                'bg-blue-50 border-blue-200'
+                                            }`}>
+                                            <p className={`text-sm font-medium ${order.status === 'cancelled' || cancellationNote ? 'text-red-900' :
+                                                order.status === 'returned' || returnNote ? 'text-orange-900' :
+                                                    'text-blue-900'
+                                                }`}>
+                                                {cancellationNote ? '❌ İptal Nedeni: ' : returnNote ? '🔄 İade Nedeni: ' : '📦 '}
+                                                {displayNote}
+                                            </p>
+                                        </div>
+                                    );
+                                }
+                                return null;
+                            })()}
+
+                            {/* Order Activity Timeline */}
+                            {(() => {
+                                // @ts-ignore
+                                const notes = (order.notes || []).sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+                                if (notes.length > 0) {
+                                    return (
+                                        <div className="mt-8 pt-6 border-t border-gray-100">
+                                            <h4 className="text-sm font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                                                <div className="h-6 w-6 rounded-full bg-gray-100 flex items-center justify-center">
+                                                    <Clock className="h-3.5 w-3.5 text-gray-600" />
+                                                </div>
+                                                Sipariş Hareketleri
+                                            </h4>
+                                            <div className="space-y-6 relative pl-3">
+                                                {/* Vertical line */}
+                                                <div className="absolute left-[11px] top-2 bottom-2 w-px bg-gray-200" />
+
+                                                {notes.map((note: any, index: number) => {
+                                                    const isFirst = index === 0;
+                                                    const noteType = note.noteType;
+                                                    const statusForGeneric = note.orderStatus || 'pending';
+
+                                                    let Icon = Info;
+                                                    let colorClass = 'bg-gray-100 text-gray-600 border-gray-200';
+
+                                                    if (noteType === 'cancellation') {
+                                                        Icon = XCircle;
+                                                        colorClass = 'bg-red-100 text-red-600 border-red-200';
+                                                    } else if (noteType === 'return') {
+                                                        Icon = RotateCcw;
+                                                        colorClass = 'bg-orange-100 text-orange-600 border-orange-200';
+                                                    } else {
+                                                        switch (statusForGeneric) {
+                                                            case 'pending': Icon = Clock; colorClass = 'bg-yellow-100 text-yellow-600 border-yellow-200'; break;
+                                                            case 'processing': Icon = Package; colorClass = 'bg-blue-100 text-blue-600 border-blue-200'; break;
+                                                            case 'shipped': Icon = Truck; colorClass = 'bg-purple-100 text-purple-600 border-purple-200'; break;
+                                                            case 'outForDelivery': Icon = Package2; colorClass = 'bg-indigo-100 text-indigo-600 border-indigo-200'; break;
+                                                            case 'delivered': Icon = CheckCircle; colorClass = 'bg-green-100 text-green-600 border-green-200'; break;
+                                                            default: Icon = Info; colorClass = 'bg-gray-100 text-gray-600 border-gray-200'; break;
+                                                        }
+                                                    }
+
+                                                    return (
+                                                        <div key={note.id} className="relative pl-8">
+                                                            {/* Icon Dot */}
+                                                            <div className={`absolute left-0 top-1.5 h-6 w-6 rounded-full border-2 flex items-center justify-center z-10 transition-all duration-300
+                                                                ${colorClass} 
+                                                                ${isFirst ? 'scale-110 ring-2 ring-offset-1 ring-blue-400 shadow-[0_0_8px_rgba(59,130,246,0.3)]' : 'scale-100 opacity-90 grayscale-[0.5]'}
+                                                            `}>
+                                                                <Icon className="h-3 w-3" />
+                                                            </div>
+
+                                                            <div className={`flex flex-col gap-1 transition-all duration-300 ${isFirst ? '' : 'opacity-75'}`}>
+                                                                <div className="flex items-center gap-2">
+                                                                    <span className={`text-xs font-medium ${isFirst ? 'text-gray-900' : 'text-gray-500'}`}>
+                                                                        {new Date(note.createdAt).toLocaleString('tr-TR', {
+                                                                            day: 'numeric',
+                                                                            month: 'long',
+                                                                            year: 'numeric',
+                                                                            hour: '2-digit',
+                                                                            minute: '2-digit'
+                                                                        })}
+                                                                    </span>
+                                                                    {noteType === 'cancellation' && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-red-100 text-red-700">İPTAL</span>}
+                                                                    {noteType === 'return' && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-orange-100 text-orange-700">İADE</span>}
+                                                                </div>
+                                                                <p className={`text-sm leading-relaxed ${isFirst ? 'text-gray-900 font-medium' : 'text-gray-600'}`}>
+                                                                    {note.note}
+                                                                </p>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    );
+                                }
+                                return null;
+                            })()}
+                        </div>
+                    </div>
+                )}
+
+                {/* Special Status Messages */}
+                {order.status === 'pending' && (
+                    <div className="p-8 border-b bg-yellow-50">
+                        <div className="text-center space-y-2">
+                            <Clock className="h-12 w-12 text-yellow-600 mx-auto" />
+                            <h3 className="font-bold text-gray-900">⏳ Siparişiniz Beklemede</h3>
+                            <p className="text-sm text-gray-600">Siparişiniz alındı ve işleme hazırlanıyor.</p>
+                        </div>
+                    </div>
+                )}
+                {order.paymentStatus === 'rejected' && order.status !== 'cancelled' && (
+                    <div className="p-8 border-b bg-red-50">
+                        <div className="text-center space-y-2">
+                            <XCircle className="h-12 w-12 text-red-600 mx-auto" />
+                            <h3 className="font-bold text-gray-900">⛔ Ödeme Reddedildi</h3>
+                            <p className="text-sm text-gray-600">Ödemeniz onaylanmadı. Lütfen tekrar bildirim yapın veya iletişime geçin.</p>
+                            {((order as any).latestPaymentNote) && (
+                                <div className="mt-4 p-4 bg-white border border-red-100 rounded-lg max-w-lg mx-auto">
+                                    <p className="font-medium text-red-900 mb-1">Red Nedeni:</p>
+                                    <p className="text-sm text-red-800">
+                                        {(order as any).latestPaymentNote}
+                                    </p>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                )}
+                {order.status === 'cancelled' && (
+                    <div className="p-8 border-b bg-red-50">
+                        <div className="text-center space-y-2">
+                            <XCircle className="h-12 w-12 text-red-600 mx-auto" />
+                            <h3 className="font-bold text-gray-900">❌ Sipariş İptal Edildi</h3>
+                            <p className="text-sm text-gray-600">Bu sipariş iptal edilmiştir.</p>
+
+                            {/* Admin Notu / Red Nedeni */}
+                            {((order as any).latestPaymentNote || order.statusDetail) && (
+                                <div className="mt-4 p-4 bg-white border border-red-100 rounded-lg max-w-lg mx-auto">
+                                    <p className="font-medium text-red-900 mb-1">İptal Nedeni / Açıklama:</p>
+                                    <p className="text-sm text-red-800">
+                                        {((order as any).latestPaymentNote || order.statusDetail || "").replace('İptal Nedeni: ', '')}
+                                    </p>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                )}
+                {order.status === 'returned' && (
+                    <div className="p-8 border-b bg-orange-50">
+                        <div className="text-center space-y-2">
+                            <RotateCcw className="h-12 w-12 text-orange-600 mx-auto" />
+                            <h3 className="font-bold text-gray-900">🔄 Sipariş İade Edildi</h3>
+                            <p className="text-sm text-gray-600">Bu sipariş iade işlemi tamamlanmıştır.</p>
+                            {order.statusDetail && (
+                                <div className="mt-4 p-4 bg-white border border-orange-100 rounded-lg max-w-lg mx-auto">
+                                    <p className="font-medium text-orange-900 mb-1">Bilgi / İade Nedeni:</p>
+                                    <p className="text-sm text-orange-800">
+                                        {order.statusDetail.replace('İade Nedeni: ', '')}
+                                    </p>
+                                </div>
+                            )}
                         </div>
                     </div>
                 )}

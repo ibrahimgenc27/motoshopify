@@ -15,6 +15,8 @@ import Register from "@/pages/Register";
 import Admin from "@/pages/Admin";
 import MyOrders from "@/pages/MyOrders";
 import OrderTracking from "@/pages/OrderTracking";
+import OrderComplete from "@/pages/OrderComplete";
+import PaymentNotification from "@/pages/PaymentNotification";
 
 function Router() {
   return (
@@ -30,6 +32,8 @@ function Router() {
       <Route path="/admin" component={Admin} />
       <Route path="/orders" component={MyOrders} />
       <Route path="/track-order" component={OrderTracking} />
+      <Route path="/order-complete" component={OrderComplete} />
+      <Route path="/payment-notification" component={PaymentNotification} />
       <Route component={NotFound} />
     </Switch>
   );

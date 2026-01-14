@@ -15,8 +15,8 @@ import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 
 export function Header() {
-  const { data: cartItems } = useCart();
   const { user, isAuthenticated, isAdmin, logout, isLoading } = useAuth();
+  const { data: cartItems } = useCart(user?.id);
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const cartCount = cartItems?.reduce((acc, item) => acc + item.quantity, 0) || 0;

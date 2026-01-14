@@ -11,7 +11,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
-import { Package, Clock, Truck, CheckCircle, MapPin, Calendar, Search } from "lucide-react";
+import { Package, Clock, Truck, CheckCircle, MapPin, Calendar, Search, XCircle, RotateCcw, Package2, AlertCircle, CreditCard } from "lucide-react";
 import { Link } from "wouter";
 
 const formSchema = z.object({
@@ -19,10 +19,11 @@ const formSchema = z.object({
     code: z.string().min(1, "Sipariş kodu gereklidir"),
 });
 
-const steps = [
-    { id: "pending", label: "Sipariş Alındı", icon: Clock, color: "text-yellow-600 bg-yellow-100 border-yellow-200" },
+// Progress bar steps - only normal flow statuses
+const progressSteps = [
     { id: "processing", label: "Hazırlanıyor", icon: Package, color: "text-blue-600 bg-blue-100 border-blue-200" },
-    { id: "shipped", label: "Kargoya Verildi", icon: Truck, color: "text-purple-600 bg-purple-100 border-purple-200" },
+    { id: "shipped", label: "Kargoda", icon: Truck, color: "text-purple-600 bg-purple-100 border-purple-200" },
+    { id: "outForDelivery", label: "Dağıtıma Çıktı", icon: Package2, color: "text-indigo-600 bg-indigo-100 border-indigo-200" },
     { id: "delivered", label: "Teslim Edildi", icon: CheckCircle, color: "text-green-600 bg-green-100 border-green-200" },
 ];
 
@@ -57,15 +58,20 @@ export default function OrderTracking() {
         }
     }
 
-    // Helper to determine progress width (borrowed from MyOrders)
+    // Helper to determine progress width
     const getProgressWidth = (status: string) => {
-        const statusOrder = ["pending", "processing", "shipped", "delivered"];
+        const statusOrder = ["processing", "shipped", "outForDelivery", "delivered"];
         const index = statusOrder.indexOf(status);
         if (index === 0) return 15;
         if (index === 1) return 40;
         if (index === 2) return 65;
         if (index >= 3) return 100;
         return 0;
+    };
+
+    // Check if order should show progress bar
+    const shouldShowProgressBar = (status: string) => {
+        return ["processing", "shipped", "outForDelivery", "delivered"].includes(status);
     };
 
     return (
@@ -140,42 +146,138 @@ export default function OrderTracking() {
                                             <div className="text-xl font-black text-gray-900">{orderResult.order.totalAmount.toLocaleString("tr-TR")} ₺</div>
                                         </div>
                                     </div>
+                                    {/* Ödeme durumu badge */}
+                                    <div className="mt-4 flex flex-wrap items-center gap-2">
+                                        {(orderResult.order.paymentStatus === 'unpaid' || !orderResult.order.paymentStatus) && orderResult.order.status !== 'cancelled' && (
+                                            <span className="bg-yellow-100 text-yellow-700 px-3 py-1 rounded-full text-sm font-bold">
+                                                💳 Ödeme Bekleniyor
+                                            </span>
+                                        )}
+                                        {orderResult.order.paymentStatus === 'pending_approval' && (
+                                            <span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm font-bold">
+                                                ⏳ Onay Bekleniyor
+                                            </span>
+                                        )}
+                                        {orderResult.order.paymentStatus === 'paid' && (
+                                            <span className="bg-green-100 text-green-700 px-3 py-1 rounded-full text-sm font-bold">
+                                                ✅ Ödendi
+                                            </span>
+                                        )}
+                                    </div>
+                                    {/* Ödeme bildirimi butonu */}
+                                    {(orderResult.order.paymentStatus === 'unpaid' || !orderResult.order.paymentStatus) && orderResult.order.status !== 'cancelled' && (
+                                        <div className="mt-4">
+                                            <Link href={`/payment-notification?orderId=${orderResult.order.id}&orderCode=${orderResult.order.orderCode}&amount=${orderResult.order.totalAmount}`}>
+                                                <Button className="bg-blue-600 hover:bg-blue-700 text-white">
+                                                    <CreditCard className="h-4 w-4 mr-2" />
+                                                    Ödeme Bildirimi Yap
+                                                </Button>
+                                            </Link>
+                                        </div>
+                                    )}
                                 </div>
 
                                 <CardContent className="p-0">
-                                    {/* Stepper */}
+                                    {/* Status Display */}
                                     <div className="p-8 border-b bg-white">
-                                        <div className="relative mx-4">
-                                            <div className="absolute top-5 left-0 w-full h-1 bg-gray-100 rounded-full" />
-                                            <div
-                                                className="absolute top-5 left-0 h-1 bg-green-600 rounded-full transition-all duration-1000 ease-out"
-                                                style={{ width: `${getProgressWidth(orderResult.order.status)}%` }}
-                                            />
-                                            <div className="flex justify-between w-full relative z-10">
-                                                {steps.map((step, idx) => {
-                                                    const Icon = step.icon;
-                                                    const currentStatusIndex = ["pending", "processing", "shipped", "delivered"].indexOf(orderResult.order.status);
-                                                    const isCompleted = currentStatusIndex >= idx;
-                                                    const isCurrent = currentStatusIndex === idx;
-
-                                                    return (
-                                                        <div key={step.id} className="flex flex-col items-center gap-3">
-                                                            <div className={`
-                                                            h-10 w-10 rounded-full flex items-center justify-center border-2 transition-all duration-500
-                                                            ${isCompleted
-                                                                    ? `${step.color} scale-110 shadow-sm`
-                                                                    : "bg-white border-gray-200 text-gray-400 grayscale"}
-                                                          `}>
-                                                                <Icon className={`h-5 w-5 ${isCurrent ? 'scale-125' : ''}`} />
-                                                            </div>
-                                                            <span className={`text-xs font-bold uppercase tracking-wide ${isCompleted ? "text-gray-900" : "text-gray-400"}`}>
-                                                                {step.label}
-                                                            </span>
-                                                        </div>
-                                                    );
-                                                })}
+                                        {/* Pending Status */}
+                                        {orderResult.order.status === "pending" && (
+                                            <div className="text-center space-y-3">
+                                                <div className="flex justify-center">
+                                                    <div className="h-16 w-16 rounded-full bg-yellow-100 border-2 border-yellow-200 flex items-center justify-center">
+                                                        <Clock className="h-8 w-8 text-yellow-600" />
+                                                    </div>
+                                                </div>
+                                                <h3 className="text-xl font-bold text-gray-900">Siparişiniz Beklemede</h3>
+                                                <p className="text-gray-500">Siparişiniz alındı ve işleme hazırlanıyor.</p>
                                             </div>
-                                        </div>
+                                        )}
+
+                                        {/* Cancelled Status */}
+                                        {orderResult.order.status === "cancelled" && (
+                                            <div className="text-center space-y-3">
+                                                <div className="flex justify-center">
+                                                    <div className="h-16 w-16 rounded-full bg-red-100 border-2 border-red-200 flex items-center justify-center">
+                                                        <XCircle className="h-8 w-8 text-red-600" />
+                                                    </div>
+                                                </div>
+                                                <h3 className="text-xl font-bold text-gray-900">Sipariş İptal Edildi</h3>
+                                                <p className="text-gray-500">Bu sipariş iptal edilmiştir.</p>
+                                                {orderResult.order.statusDetail && (
+                                                    <div className="mt-4 p-4 bg-gray-50 rounded-lg">
+                                                        <p className="text-sm text-gray-700">
+                                                            <AlertCircle className="inline h-4 w-4 mr-1" />
+                                                            {orderResult.order.statusDetail}
+                                                        </p>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+
+                                        {/* Returned Status */}
+                                        {orderResult.order.status === "returned" && (
+                                            <div className="text-center space-y-3">
+                                                <div className="flex justify-center">
+                                                    <div className="h-16 w-16 rounded-full bg-orange-100 border-2 border-orange-200 flex items-center justify-center">
+                                                        <RotateCcw className="h-8 w-8 text-orange-600" />
+                                                    </div>
+                                                </div>
+                                                <h3 className="text-xl font-bold text-gray-900">Sipariş İade Edildi</h3>
+                                                <p className="text-gray-500">Bu sipariş iade işlemi tamamlanmıştır.</p>
+                                                {orderResult.order.statusDetail && (
+                                                    <div className="mt-4 p-4 bg-gray-50 rounded-lg">
+                                                        <p className="text-sm text-gray-700">
+                                                            <AlertCircle className="inline h-4 w-4 mr-1" />
+                                                            {orderResult.order.statusDetail}
+                                                        </p>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+
+                                        {/* Progress Bar - Normal Flow Only */}
+                                        {shouldShowProgressBar(orderResult.order.status) && (
+                                            <div className="relative mx-4">
+                                                <div className="absolute top-5 left-0 w-full h-1 bg-gray-100 rounded-full" />
+                                                <div
+                                                    className="absolute top-5 left-0 h-1 bg-green-600 rounded-full transition-all duration-1000 ease-out"
+                                                    style={{ width: `${getProgressWidth(orderResult.order.status)}%` }}
+                                                />
+                                                <div className="flex justify-between w-full relative z-10">
+                                                    {progressSteps.map((step, idx) => {
+                                                        const Icon = step.icon;
+                                                        const currentStatusIndex = ["processing", "shipped", "outForDelivery", "delivered"].indexOf(orderResult.order.status);
+                                                        const isCompleted = currentStatusIndex >= idx;
+                                                        const isCurrent = currentStatusIndex === idx;
+
+                                                        return (
+                                                            <div key={step.id} className="flex flex-col items-center gap-3">
+                                                                <div className={`
+                                                                h-10 w-10 rounded-full flex items-center justify-center border-2 transition-all duration-500
+                                                                ${isCompleted
+                                                                        ? `${step.color} scale-110 shadow-sm`
+                                                                        : "bg-white border-gray-200 text-gray-400 grayscale"}
+                                                              `}>
+                                                                    <Icon className={`h-5 w-5 ${isCurrent ? 'scale-125' : ''}`} />
+                                                                </div>
+                                                                <span className={`text-xs font-bold uppercase tracking-wide ${isCompleted ? "text-gray-900" : "text-gray-400"}`}>
+                                                                    {step.label}
+                                                                </span>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                                {/* Status Detail */}
+                                                {orderResult.order.statusDetail && (
+                                                    <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                                                        <p className="text-sm text-blue-900 font-medium">
+                                                            <Package className="inline h-4 w-4 mr-2" />
+                                                            {orderResult.order.statusDetail}
+                                                        </p>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
                                     </div>
 
                                     {/* Items List */}

@@ -6,14 +6,23 @@ import {
   orders,
   orderItems,
   users,
+  paymentNotifications,
   type InsertProduct,
   type InsertCartItem,
   type InsertOrder,
   type InsertUser,
+  type InsertPaymentNotification,
   type Product,
   type CartItem,
   type Order,
-  type User
+  type User,
+  type PaymentNotification,
+  type InsertReview,
+  type Review,
+  reviews,
+  type InsertOrderNote,
+  type OrderNote,
+  orderNotes,
 } from "@shared/schema";
 import { eq, and, isNull, desc } from "drizzle-orm";
 
@@ -33,15 +42,36 @@ export interface IStorage {
 
   createOrder(order: InsertOrder, items: { productId: number, quantity: number, price: number, selectedColor?: string | null }[]): Promise<{ id: number, orderCode: string }>;
   getOrders(): Promise<Order[]>;
-  getOrdersByEmail(email: string): Promise<{ order: Order, items: any[] }[]>;
+  getOrdersByEmail(email: string): Promise<{ order: Order & { latestPaymentNote?: string | null }, items: any[] }[]>;
   getOrderByCodeAndEmail(code: string, email: string): Promise<{ order: Order, items: any[] } | null>;
   getOrderWithItems(orderId: number): Promise<{ order: Order, items: any[] } | null>;
-  updateOrderStatus(orderId: number, status: string): Promise<Order>;
+  updateOrderStatus(orderId: number, status: string, statusDetail?: string): Promise<Order>;
+  updateOrderPaymentStatus(orderId: number, paymentStatus: string): Promise<Order>;
 
   // User methods
   createUser(user: InsertUser): Promise<User>;
   getUserByEmail(email: string): Promise<User | undefined>;
   getUserById(id: number): Promise<User | undefined>;
+
+  // Payment notification methods
+  createPaymentNotification(notification: InsertPaymentNotification): Promise<PaymentNotification>;
+  getPaymentNotifications(): Promise<PaymentNotification[]>;
+  getPaymentNotificationById(id: number): Promise<PaymentNotification | undefined>;
+  approvePaymentNotification(id: number, adminNote?: string): Promise<{ notification: PaymentNotification, order: Order }>;
+  rejectPaymentNotification(id: number, adminNote: string): Promise<PaymentNotification>;
+
+  // Review methods
+  createReview(review: InsertReview): Promise<Review>;
+  getProductReviews(productId: number): Promise<Review[]>;
+  getReview(id: number): Promise<Review | undefined>;
+  updateReview(id: number, review: Partial<InsertReview>): Promise<Review>;
+  deleteReview(id: number): Promise<void>;
+
+  // Order Notes methods
+  createOrderNote(note: InsertOrderNote): Promise<OrderNote>;
+  getOrderNotes(orderId: number): Promise<OrderNote[]>;
+  updateOrderNote(id: number, note: string): Promise<OrderNote>;
+  deleteOrderNote(id: number): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -144,6 +174,15 @@ export class DatabaseStorage implements IStorage {
         }))
       );
 
+      // Reduce stock for each product
+      for (const item of items) {
+        const [product] = await tx.select().from(products).where(eq(products.id, item.productId));
+        if (product) {
+          const newStock = Math.max(0, (product.stock || 0) - item.quantity);
+          await tx.update(products).set({ stock: newStock }).where(eq(products.id, item.productId));
+        }
+      }
+
       return { id: newOrder.id, orderCode: newOrder.orderCode };
     });
   }
@@ -153,7 +192,7 @@ export class DatabaseStorage implements IStorage {
     return await db.select().from(orders).orderBy(desc(orders.createdAt));
   }
 
-  async getOrdersByEmail(email: string): Promise<{ order: Order, items: any[] }[]> {
+  async getOrdersByEmail(email: string): Promise<{ order: Order & { latestPaymentNote?: string | null, notes?: OrderNote[] }, items: any[] }[]> {
     const userOrders = await db.select().from(orders).where(eq(orders.customerEmail, email)).orderBy(desc(orders.createdAt));
 
     const results = [];
@@ -164,6 +203,20 @@ export class DatabaseStorage implements IStorage {
         .leftJoin(products, eq(orderItems.productId, products.id))
         .where(eq(orderItems.orderId, order.id));
 
+      const [notification] = await db
+        .select()
+        .from(paymentNotifications)
+        .where(eq(paymentNotifications.orderId, order.id))
+        .orderBy(desc(paymentNotifications.notificationDate))
+        .limit(1);
+
+      // Get order notes
+      const notes = await db
+        .select()
+        .from(orderNotes)
+        .where(eq(orderNotes.orderId, order.id))
+        .orderBy(desc(orderNotes.createdAt));
+
       const items = dbItems.map(row => ({
         ...row.order_items,
         name: row.products?.name || "Ürün Silinmiş",
@@ -171,7 +224,10 @@ export class DatabaseStorage implements IStorage {
         description: row.products?.description || "",
       }));
 
-      results.push({ order, items });
+      results.push({
+        order: { ...order, latestPaymentNote: notification?.adminNote || null, notes },
+        items
+      });
     }
     return results;
   }
@@ -219,10 +275,23 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
-  async updateOrderStatus(orderId: number, status: string): Promise<Order> {
+  async updateOrderStatus(orderId: number, status: string, statusDetail?: string): Promise<Order> {
+    const updateData: any = { status, updatedAt: new Date() };
+    if (statusDetail !== undefined) {
+      updateData.statusDetail = statusDetail;
+    }
     const [updated] = await db
       .update(orders)
-      .set({ status })
+      .set(updateData)
+      .where(eq(orders.id, orderId))
+      .returning();
+    return updated;
+  }
+
+  async updateOrderPaymentStatus(orderId: number, paymentStatus: string): Promise<Order> {
+    const [updated] = await db
+      .update(orders)
+      .set({ paymentStatus, updatedAt: new Date() })
       .where(eq(orders.id, orderId))
       .returning();
     return updated;
@@ -242,6 +311,126 @@ export class DatabaseStorage implements IStorage {
   async getUserById(id: number): Promise<User | undefined> {
     const [user] = await db.select().from(users).where(eq(users.id, id));
     return user;
+  }
+
+  // Payment notification methods
+  async createPaymentNotification(notification: InsertPaymentNotification): Promise<PaymentNotification> {
+    const [newNotification] = await db.insert(paymentNotifications).values(notification).returning();
+    return newNotification;
+  }
+
+  async getPaymentNotifications(): Promise<PaymentNotification[]> {
+    return await db.select().from(paymentNotifications).orderBy(desc(paymentNotifications.notificationDate));
+  }
+
+  async getPaymentNotificationById(id: number): Promise<PaymentNotification | undefined> {
+    const [notification] = await db.select().from(paymentNotifications).where(eq(paymentNotifications.id, id));
+    return notification;
+  }
+
+  async approvePaymentNotification(id: number, adminNote?: string): Promise<{ notification: PaymentNotification, order: Order }> {
+    return await db.transaction(async (tx) => {
+      // Get notification
+      const [notification] = await tx.select().from(paymentNotifications).where(eq(paymentNotifications.id, id));
+      if (!notification) throw new Error("Bildirim bulunamadı");
+
+      // Update notification status
+      const [updatedNotification] = await tx
+        .update(paymentNotifications)
+        .set({ status: "approved", adminNote })
+        .where(eq(paymentNotifications.id, id))
+        .returning();
+
+      // Update order payment status and order status
+      const [updatedOrder] = await tx
+        .update(orders)
+        .set({
+          paymentStatus: "paid",
+          status: "processing", // Ödeme onaylandı, sipariş hazırlanmaya alındı
+          updatedAt: new Date()
+        })
+        .where(eq(orders.id, notification.orderId))
+        .returning();
+
+      return { notification: updatedNotification, order: updatedOrder };
+    });
+  }
+
+  async rejectPaymentNotification(id: number, adminNote: string): Promise<PaymentNotification> {
+    return await db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(paymentNotifications)
+        .set({ status: "rejected", adminNote })
+        .where(eq(paymentNotifications.id, id))
+        .returning();
+
+      if (updated) {
+        await tx.update(orders)
+          .set({ status: 'pending', updatedAt: new Date() })
+          .where(eq(orders.id, updated.orderId));
+      }
+
+      return updated;
+    });
+  }
+
+  // Review methods
+  async createReview(review: InsertReview): Promise<Review> {
+    const [newReview] = await db.insert(reviews).values(review).returning();
+    return newReview;
+  }
+
+  async getProductReviews(productId: number): Promise<Review[]> {
+    return await db.select().from(reviews).where(eq(reviews.productId, productId)).orderBy(desc(reviews.createdAt));
+  }
+
+  async getReview(id: number): Promise<Review | undefined> {
+    const [review] = await db.select().from(reviews).where(eq(reviews.id, id));
+    return review;
+  }
+
+  async updateReview(id: number, review: Partial<InsertReview>): Promise<Review> {
+    const [updatedReview] = await db.update(reviews).set({ ...review, createdAt: undefined }).where(eq(reviews.id, id)).returning();
+    return updatedReview;
+  }
+
+  async deleteReview(id: number): Promise<void> {
+    await db.delete(reviews).where(eq(reviews.id, id));
+  }
+
+  // Order Notes methods
+  async createOrderNote(note: InsertOrderNote): Promise<OrderNote> {
+    let orderStatus = note.orderStatus;
+
+    // If orderStatus is not provided, fetch current order status
+    if (!orderStatus) {
+      console.log(`[createOrderNote] Fetching status for orderId: ${note.orderId}`);
+      const [order] = await db.select().from(orders).where(eq(orders.id, note.orderId));
+      if (order) {
+        orderStatus = order.status; // status is not null in DB definition
+        console.log(`[createOrderNote] Found order status: ${orderStatus}`);
+      } else {
+        console.log(`[createOrderNote] Order not found for id: ${note.orderId}`);
+      }
+    } else {
+      console.log(`[createOrderNote] orderStatus provided in note: ${orderStatus}`);
+    }
+
+    const [newNote] = await db.insert(orderNotes).values({ ...note, orderStatus }).returning();
+    return newNote;
+  }
+
+  async getOrderNotes(orderId: number): Promise<OrderNote[]> {
+    return await db.select().from(orderNotes).where(eq(orderNotes.orderId, orderId)).orderBy(desc(orderNotes.createdAt));
+  }
+
+  async updateOrderNote(id: number, note: string): Promise<OrderNote> {
+    const [updated] = await db.update(orderNotes).set({ note, updatedAt: new Date() }).where(eq(orderNotes.id, id)).returning();
+    return updated;
+  }
+
+  async deleteOrderNote(id: number): Promise<void> {
+    await db.delete(orderNotes).where(eq(orderNotes.id, id));
   }
 }
 

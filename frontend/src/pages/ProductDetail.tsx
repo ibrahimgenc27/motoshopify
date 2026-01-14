@@ -3,6 +3,7 @@ import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
 import { useProduct } from "@/hooks/use-products";
 import { useAddToCart } from "@/hooks/use-cart";
+import { useAuth } from "@/hooks/use-auth";
 import { useRoute, useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
@@ -10,13 +11,15 @@ import { cn } from "@/lib/utils";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Check, Truck, ShieldCheck, ArrowLeft } from "lucide-react";
 import { Link } from "wouter";
+import { ProductReviews } from "@/components/ProductReviews";
 
 export default function ProductDetail() {
   const [match, params] = useRoute("/products/:id");
   const [, setLocation] = useLocation();
   const id = parseInt(params?.id || "0");
   const { data: product, isLoading, isError } = useProduct(id);
-  const addToCartMutation = useAddToCart();
+  const { user } = useAuth();
+  const addToCartMutation = useAddToCart(user?.id);
   const [isBuying, setIsBuying] = useState(false);
 
   const [selectedColor, setSelectedColor] = useState<string | null>(null);
@@ -221,6 +224,9 @@ export default function ProductDetail() {
             </div>
           </div>
         </div>
+
+        {/* Product Reviews */}
+        <ProductReviews productId={product.id} />
       </main>
 
       <Footer />

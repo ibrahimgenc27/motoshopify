@@ -15,14 +15,32 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
     Dialog,
     DialogContent,
     DialogDescription,
     DialogHeader,
     DialogTitle,
+    DialogFooter,
 } from "@/components/ui/dialog";
 import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
     Plus,
+    MessageSquare,
     Trash2,
     Edit,
     Package,
@@ -52,8 +70,14 @@ import {
     CheckCircle,
     Clock,
     Truck,
-    XCircle
+    XCircle,
+    Package2,
+    RotateCcw,
+    CreditCard,
+    Building2
 } from "lucide-react";
+import { OrderNotes } from "@/components/OrderNotes";
+import { apiRequest } from "@/lib/queryClient";
 import { api } from "@shared/routes";
 
 interface ProductFormData {
@@ -98,7 +122,28 @@ export default function Admin() {
 
     // Order management state
     const [selectedOrderId, setSelectedOrderId] = useState<number | null>(null);
+    const [deleteProductId, setDeleteProductId] = useState<number | null>(null);
+    const [approvePaymentId, setApprovePaymentId] = useState<number | null>(null);
+    const [rejectPaymentId, setRejectPaymentId] = useState<number | null>(null);
+    const [rejectReason, setRejectReason] = useState("");
     const [isOrderDetailOpen, setIsOrderDetailOpen] = useState(false);
+    const [activeTab, setActiveTab] = useState("orders");
+    const [orderStatusFilter, setOrderStatusFilter] = useState("all");
+    const [orderSearchQuery, setOrderSearchQuery] = useState("");
+    const [dateFilter, setDateFilter] = useState<"thisMonth" | "total">("thisMonth");
+    const [statusDetailInput, setStatusDetailInput] = useState<Record<number, string>>({});
+
+    // Status Change Dialog state (for Cancel/Return)
+    const [isStatusDialogOpen, setIsStatusDialogOpen] = useState(false);
+    const [statusDialogData, setStatusDialogData] = useState<{
+        orderId: number,
+        newStatus: string,
+        title: string,
+        description: string,
+        label: string,
+        placeholder: string,
+        reason: string
+    } | null>(null);
 
     // Fetch orders
     const { data: orders, isLoading: ordersLoading } = useQuery({
@@ -106,6 +151,17 @@ export default function Admin() {
         queryFn: async () => {
             const res = await fetch("/api/admin/orders", { credentials: "include" });
             if (!res.ok) throw new Error("Siparişler alınamadı");
+            return res.json();
+        },
+        enabled: isAdmin,
+    });
+
+    // Fetch payment notifications
+    const { data: paymentNotifications, isLoading: notificationsLoading } = useQuery({
+        queryKey: ["/api/admin/payment-notifications"],
+        queryFn: async () => {
+            const res = await fetch("/api/admin/payment-notifications", { credentials: "include" });
+            if (!res.ok) throw new Error("Ödeme bildirimleri alınamadı");
             return res.json();
         },
         enabled: isAdmin,
@@ -188,12 +244,12 @@ export default function Admin() {
 
     // Update order status mutation
     const updateOrderStatusMutation = useMutation({
-        mutationFn: async ({ id, status }: { id: number; status: string }) => {
+        mutationFn: async ({ id, status, statusDetail }: { id: number; status: string; statusDetail?: string }) => {
             const res = await fetch(`/api/admin/orders/${id}/status`, {
                 method: "PATCH",
                 headers: { "Content-Type": "application/json" },
                 credentials: "include",
-                body: JSON.stringify({ status }),
+                body: JSON.stringify({ status, statusDetail }),
             });
             if (!res.ok) throw new Error("Durum güncellenemedi");
             return res.json();
@@ -201,17 +257,122 @@ export default function Admin() {
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ["/api/admin/orders"] });
             toast({ title: "Başarılı", description: "Sipariş durumu güncellendi!" });
+            setStatusDetailInput({});
         },
         onError: (error: any) => {
             toast({ title: "Hata", description: error.message, variant: "destructive" });
         },
     });
 
+    // Approve payment notification mutation
+    const approveNotificationMutation = useMutation({
+        mutationFn: async ({ id, adminNote }: { id: number; adminNote?: string }) => {
+            const res = await fetch(`/api/admin/payment-notifications/${id}/approve`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify({ adminNote }),
+            });
+            if (!res.ok) throw new Error("Ödeme onaylanamadı");
+            return res.json();
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ["/api/admin/payment-notifications"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/admin/orders"] });
+            toast({ title: "Başarılı", description: "Ödeme onaylandı! Sipariş hazırlanmaya başladı." });
+        },
+        onError: (error: any) => {
+            toast({ title: "Hata", description: error.message, variant: "destructive" });
+        },
+    });
+
+    // Reject payment notification mutation
+    const rejectNotificationMutation = useMutation({
+        mutationFn: async ({ id, adminNote }: { id: number; adminNote: string }) => {
+            const res = await fetch(`/api/admin/payment-notifications/${id}/reject`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify({ adminNote }),
+            });
+            if (!res.ok) throw new Error("Ödeme reddedilemedi");
+            return res.json();
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ["/api/admin/payment-notifications"] });
+            toast({ title: "Reddedildi", description: "Ödeme bildirimi reddedildi." });
+        },
+        onError: (error: any) => {
+            toast({ title: "Hata", description: error.message, variant: "destructive" });
+        },
+    });
+
+
     // Calculate stats
     const motorcycleCount = products?.filter(p => p.category === 'motorcycle').length || 0;
     const equipmentCount = products?.filter(p => p.category === 'equipment').length || 0;
     const partsCount = products?.filter(p => p.category === 'parts').length || 0;
     const totalStock = products?.reduce((acc, p) => acc + (p.stock || 0), 0) || 0;
+
+    // Order statistics with date filter
+    const filteredStatsOrders = useMemo(() => {
+        if (!orders) return [];
+        if (dateFilter === "total") return orders;
+
+        const now = new Date();
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+        return orders.filter((o: any) => {
+            const orderDate = new Date(o.createdAt);
+            return orderDate >= startOfMonth;
+        });
+    }, [orders, dateFilter]);
+
+    const statsOrders = filteredStatsOrders.length || 0;
+    const statsApproved = filteredStatsOrders.filter((o: any) => ['processing', 'shipped', 'delivered'].includes(o.status)).length || 0;
+    const statsCancelled = filteredStatsOrders.filter((o: any) => o.status === 'cancelled').length || 0;
+
+    // Filter orders by status and date
+    const filteredOrders = useMemo(() => {
+        if (!orders) return [];
+
+        let result = orders;
+
+        // Havale/EFT filtresi: Ödenmemiş EFT siparişlerini gizle
+        result = result.filter((order: any) => {
+            if (order.paymentMethod === 'transfer' && order.paymentStatus !== 'paid') {
+                return false;
+            }
+            return true;
+        });
+
+        // Date filter
+        if (dateFilter === "thisMonth") {
+            const now = new Date();
+            const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+            result = result.filter((o: any) => {
+                const orderDate = new Date(o.createdAt);
+                return orderDate >= startOfMonth;
+            });
+        }
+
+        // Status filter
+        if (orderStatusFilter !== "all") {
+            result = result.filter((order: any) => order.status === orderStatusFilter);
+        }
+
+        // Search filter - kisi adi veya siparis numarasi ile arama
+        if (orderSearchQuery.trim()) {
+            const query = orderSearchQuery.toLowerCase().trim();
+            result = result.filter((order: any) =>
+                order.customerName?.toLowerCase().includes(query) ||
+                order.orderCode?.toLowerCase().includes(query) ||
+                order.customerEmail?.toLowerCase().includes(query)
+            );
+        }
+
+        return result;
+    }, [orders, orderStatusFilter, dateFilter, orderSearchQuery]);
 
     // Filter products
     const filteredProducts = useMemo(() => {
@@ -317,9 +478,7 @@ export default function Admin() {
     };
 
     const handleDelete = (id: number) => {
-        if (confirm("Bu ürünü silmek istediğinizden emin misiniz?")) {
-            deleteProductMutation.mutate(id);
-        }
+        setDeleteProductId(id);
     };
 
     const handleViewOrder = (orderId: number) => {
@@ -342,9 +501,11 @@ export default function Admin() {
     const statusLabels: Record<string, { label: string; color: string; icon: any }> = {
         pending: { label: "Beklemede", color: "bg-yellow-100 text-yellow-800", icon: Clock },
         processing: { label: "Hazırlanıyor", color: "bg-blue-100 text-blue-800", icon: Package },
-        shipped: { label: "Kargoya Verildi", color: "bg-purple-100 text-purple-800", icon: Truck },
+        shipped: { label: "Kargoda", color: "bg-purple-100 text-purple-800", icon: Truck },
+        outForDelivery: { label: "Dağıtıma Çıktı", color: "bg-indigo-100 text-indigo-800", icon: Package2 },
         delivered: { label: "Teslim Edildi", color: "bg-green-100 text-green-800", icon: CheckCircle },
         cancelled: { label: "İptal Edildi", color: "bg-red-100 text-red-800", icon: XCircle },
+        returned: { label: "İade Edildi", color: "bg-orange-100 text-orange-800", icon: RotateCcw },
     };
 
     // NOW we can have conditional returns - after all hooks
@@ -599,66 +760,119 @@ export default function Admin() {
                         </div>
                     </div>
 
-                    {/* Stats Cards */}
-                    <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
-                        <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
-                            <div className="flex items-center gap-3">
-                                <div className="h-10 w-10 rounded-lg bg-blue-100 flex items-center justify-center">
-                                    <Bike className="h-5 w-5 text-blue-600" />
+                    {/* Stats Cards - Conditional based on active tab */}
+                    {activeTab === "orders" ? (
+                        <div className="space-y-4 mb-8">
+                            <div className="flex justify-end">
+                                <div className="inline-flex rounded-lg border border-gray-200 p-1 bg-white shadow-sm">
+                                    <button
+                                        onClick={() => setDateFilter("thisMonth")}
+                                        className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all ${dateFilter === "thisMonth"
+                                            ? "bg-black text-white shadow-sm"
+                                            : "text-gray-500 hover:text-gray-900"
+                                            }`}
+                                    >
+                                        Bu Ay
+                                    </button>
+                                    <button
+                                        onClick={() => setDateFilter("total")}
+                                        className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all ${dateFilter === "total"
+                                            ? "bg-black text-white shadow-sm"
+                                            : "text-gray-500 hover:text-gray-900"
+                                            }`}
+                                    >
+                                        Toplam
+                                    </button>
                                 </div>
-                                <div>
-                                    <p className="text-2xl font-bold text-gray-900">{motorcycleCount}</p>
-                                    <p className="text-sm text-gray-500">Motor</p>
+                            </div>
+                            <div className="grid grid-cols-3 gap-4">
+                                <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
+                                    <div className="flex items-center gap-3">
+                                        <div className="h-10 w-10 rounded-lg bg-orange-100 flex items-center justify-center">
+                                            <ShoppingCart className="h-5 w-5 text-orange-600" />
+                                        </div>
+                                        <div>
+                                            <p className="text-2xl font-bold text-gray-900">{statsOrders}</p>
+                                            <p className="text-sm text-gray-500">
+                                                {dateFilter === "thisMonth" ? "Bu Ayki Sipariş" : "Toplam Sipariş"}
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="bg-white border border-green-200 rounded-xl p-4 shadow-sm">
+                                    <div className="flex items-center gap-3">
+                                        <div className="h-10 w-10 rounded-lg bg-green-100 flex items-center justify-center">
+                                            <CheckCircle className="h-5 w-5 text-green-600" />
+                                        </div>
+                                        <div>
+                                            <p className="text-2xl font-bold text-green-600">{statsApproved}</p>
+                                            <p className="text-sm text-gray-500">Onaylanan</p>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="bg-white border border-red-200 rounded-xl p-4 shadow-sm">
+                                    <div className="flex items-center gap-3">
+                                        <div className="h-10 w-10 rounded-lg bg-red-100 flex items-center justify-center">
+                                            <XCircle className="h-5 w-5 text-red-600" />
+                                        </div>
+                                        <div>
+                                            <p className="text-2xl font-bold text-red-600">{statsCancelled}</p>
+                                            <p className="text-sm text-gray-500">İptal Edilen</p>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
-                        <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
-                            <div className="flex items-center gap-3">
-                                <div className="h-10 w-10 rounded-lg bg-amber-100 flex items-center justify-center">
-                                    <HardHat className="h-5 w-5 text-amber-600" />
+                    ) : activeTab === "list" ? (
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+                            <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
+                                <div className="flex items-center gap-3">
+                                    <div className="h-10 w-10 rounded-lg bg-blue-100 flex items-center justify-center">
+                                        <Bike className="h-5 w-5 text-blue-600" />
+                                    </div>
+                                    <div>
+                                        <p className="text-2xl font-bold text-gray-900">{motorcycleCount}</p>
+                                        <p className="text-sm text-gray-500">Motor</p>
+                                    </div>
                                 </div>
-                                <div>
-                                    <p className="text-2xl font-bold text-gray-900">{equipmentCount}</p>
-                                    <p className="text-sm text-gray-500">Ekipman</p>
+                            </div>
+                            <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
+                                <div className="flex items-center gap-3">
+                                    <div className="h-10 w-10 rounded-lg bg-amber-100 flex items-center justify-center">
+                                        <HardHat className="h-5 w-5 text-amber-600" />
+                                    </div>
+                                    <div>
+                                        <p className="text-2xl font-bold text-gray-900">{equipmentCount}</p>
+                                        <p className="text-sm text-gray-500">Ekipman</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
+                                <div className="flex items-center gap-3">
+                                    <div className="h-10 w-10 rounded-lg bg-emerald-100 flex items-center justify-center">
+                                        <Wrench className="h-5 w-5 text-emerald-600" />
+                                    </div>
+                                    <div>
+                                        <p className="text-2xl font-bold text-gray-900">{partsCount}</p>
+                                        <p className="text-sm text-gray-500">Yedek Parça</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
+                                <div className="flex items-center gap-3">
+                                    <div className="h-10 w-10 rounded-lg bg-purple-100 flex items-center justify-center">
+                                        <TrendingUp className="h-5 w-5 text-purple-600" />
+                                    </div>
+                                    <div>
+                                        <p className="text-2xl font-bold text-gray-900">{totalStock}</p>
+                                        <p className="text-sm text-gray-500">Toplam Stok</p>
+                                    </div>
                                 </div>
                             </div>
                         </div>
-                        <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
-                            <div className="flex items-center gap-3">
-                                <div className="h-10 w-10 rounded-lg bg-emerald-100 flex items-center justify-center">
-                                    <Wrench className="h-5 w-5 text-emerald-600" />
-                                </div>
-                                <div>
-                                    <p className="text-2xl font-bold text-gray-900">{partsCount}</p>
-                                    <p className="text-sm text-gray-500">Yedek Parça</p>
-                                </div>
-                            </div>
-                        </div>
-                        <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
-                            <div className="flex items-center gap-3">
-                                <div className="h-10 w-10 rounded-lg bg-purple-100 flex items-center justify-center">
-                                    <TrendingUp className="h-5 w-5 text-purple-600" />
-                                </div>
-                                <div>
-                                    <p className="text-2xl font-bold text-gray-900">{totalStock}</p>
-                                    <p className="text-sm text-gray-500">Toplam Stok</p>
-                                </div>
-                            </div>
-                        </div>
-                        <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
-                            <div className="flex items-center gap-3">
-                                <div className="h-10 w-10 rounded-lg bg-orange-100 flex items-center justify-center">
-                                    <ShoppingCart className="h-5 w-5 text-orange-600" />
-                                </div>
-                                <div>
-                                    <p className="text-2xl font-bold text-gray-900">{orders?.length || 0}</p>
-                                    <p className="text-sm text-gray-500">Sipariş</p>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
+                    ) : null}
 
-                    <Tabs defaultValue="orders" className="space-y-6">
+                    <Tabs defaultValue="orders" value={activeTab} onValueChange={setActiveTab} className="space-y-6">
                         <TabsList className="bg-white border shadow-sm rounded-lg p-1">
                             <TabsTrigger
                                 value="orders"
@@ -681,32 +895,122 @@ export default function Admin() {
                                 <Plus className="h-4 w-4 mr-2" />
                                 Ürün Ekle
                             </TabsTrigger>
+                            <TabsTrigger
+                                value="payments"
+                                className="rounded-md data-[state=active]:bg-black data-[state=active]:text-white px-4"
+                            >
+                                <CreditCard className="h-4 w-4 mr-2" />
+                                Ödeme Bildirimleri ({paymentNotifications?.filter((n: any) => n.status === 'pending').length || 0})
+                            </TabsTrigger>
                         </TabsList>
 
                         {/* Orders Tab */}
                         <TabsContent value="orders">
                             <Card className="border shadow-sm">
                                 <CardHeader className="border-b bg-gray-50">
-                                    <CardTitle className="flex items-center gap-2">
-                                        <ShoppingCart className="h-5 w-5" />
-                                        Sipariş Takibi
-                                    </CardTitle>
-                                    <CardDescription>
-                                        Tüm siparişleri görüntüleyin ve yönetin
-                                    </CardDescription>
+                                    <div className="flex flex-col gap-4">
+                                        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                                            <div>
+                                                <CardTitle className="flex items-center gap-2">
+                                                    <ShoppingCart className="h-5 w-5" />
+                                                    Sipariş Takibi
+                                                </CardTitle>
+                                                <CardDescription>
+                                                    Tüm siparişleri görüntüleyin ve yönetin
+                                                </CardDescription>
+                                            </div>
+                                            <div className="relative w-full md:w-72">
+                                                <Search className="absolute left-2 top-2.5 h-4 w-4 text-gray-500" />
+                                                <Input
+                                                    placeholder="Sipariş No, İsim veya E-posta..."
+                                                    className="pl-8 bg-white"
+                                                    value={orderSearchQuery}
+                                                    onChange={(e) => setOrderSearchQuery(e.target.value)}
+                                                />
+                                            </div>
+                                        </div>
+                                        <div className="flex flex-wrap gap-2">
+                                            <Button
+                                                variant={orderStatusFilter === "all" ? "default" : "outline"}
+                                                size="sm"
+                                                onClick={() => setOrderStatusFilter("all")}
+                                                className={orderStatusFilter === "all" ? "bg-black text-white hover:bg-gray-800" : ""}
+                                            >
+                                                Tümü ({orders?.length || 0})
+                                            </Button>
+                                            <Button
+                                                variant={orderStatusFilter === "pending" ? "default" : "outline"}
+                                                size="sm"
+                                                onClick={() => setOrderStatusFilter("pending")}
+                                                className={orderStatusFilter === "pending" ? "bg-yellow-100 text-yellow-800 hover:bg-yellow-200 border-yellow-200" : "text-yellow-600 border-yellow-200 hover:bg-yellow-50"}
+                                            >
+                                                ⏳ Beklemede ({orders?.filter((o: any) => o.status === 'pending').length || 0})
+                                            </Button>
+                                            <Button
+                                                variant={orderStatusFilter === "processing" ? "default" : "outline"}
+                                                size="sm"
+                                                onClick={() => setOrderStatusFilter("processing")}
+                                                className={orderStatusFilter === "processing" ? "bg-blue-100 text-blue-800 hover:bg-blue-200 border-blue-200" : "text-blue-600 border-blue-200 hover:bg-blue-50"}
+                                            >
+                                                📦 Hazırlanıyor ({orders?.filter((o: any) => o.status === 'processing').length || 0})
+                                            </Button>
+                                            <Button
+                                                variant={orderStatusFilter === "shipped" ? "default" : "outline"}
+                                                size="sm"
+                                                onClick={() => setOrderStatusFilter("shipped")}
+                                                className={orderStatusFilter === "shipped" ? "bg-purple-100 text-purple-800 hover:bg-purple-200 border-purple-200" : "text-purple-600 border-purple-200 hover:bg-purple-50"}
+                                            >
+                                                🚚 Kargoda ({orders?.filter((o: any) => o.status === 'shipped').length || 0})
+                                            </Button>
+                                            <Button
+                                                variant={orderStatusFilter === "outForDelivery" ? "default" : "outline"}
+                                                size="sm"
+                                                onClick={() => setOrderStatusFilter("outForDelivery")}
+                                                className={orderStatusFilter === "outForDelivery" ? "bg-indigo-100 text-indigo-800 hover:bg-indigo-200 border-indigo-200" : "text-indigo-600 border-indigo-200 hover:bg-indigo-50"}
+                                            >
+                                                🚛 Dağıtıma Çıktı ({orders?.filter((o: any) => o.status === 'outForDelivery').length || 0})
+                                            </Button>
+                                            <Button
+                                                variant={orderStatusFilter === "delivered" ? "default" : "outline"}
+                                                size="sm"
+                                                onClick={() => setOrderStatusFilter("delivered")}
+                                                className={orderStatusFilter === "delivered" ? "bg-green-100 text-green-800 hover:bg-green-200 border-green-200" : "text-green-600 border-green-200 hover:bg-green-50"}
+                                            >
+                                                ✅ Teslim Edildi ({orders?.filter((o: any) => o.status === 'delivered').length || 0})
+                                            </Button>
+                                            <Button
+                                                variant={orderStatusFilter === "cancelled" ? "default" : "outline"}
+                                                size="sm"
+                                                onClick={() => setOrderStatusFilter("cancelled")}
+                                                className={orderStatusFilter === "cancelled" ? "bg-red-100 text-red-800 hover:bg-red-200 border-red-200" : "text-red-600 border-red-200 hover:bg-red-50"}
+                                            >
+                                                ❌ İptal ({orders?.filter((o: any) => o.status === 'cancelled').length || 0})
+                                            </Button>
+                                            <Button
+                                                variant={orderStatusFilter === "returned" ? "default" : "outline"}
+                                                size="sm"
+                                                onClick={() => setOrderStatusFilter("returned")}
+                                                className={orderStatusFilter === "returned" ? "bg-orange-100 text-orange-800 hover:bg-orange-200 border-orange-200" : "text-orange-600 border-orange-200 hover:bg-orange-50"}
+                                            >
+                                                🔄 İade Edildi ({orders?.filter((o: any) => o.status === 'returned').length || 0})
+                                            </Button>
+                                        </div>
+                                    </div>
                                 </CardHeader>
                                 <CardContent className="pt-6">
                                     {ordersLoading ? (
                                         <div className="flex justify-center py-12">
                                             <div className="h-10 w-10 border-4 border-gray-200 border-t-black rounded-full animate-spin" />
                                         </div>
-                                    ) : !orders || orders.length === 0 ? (
+                                    ) : !filteredOrders || filteredOrders.length === 0 ? (
                                         <div className="text-center py-12 text-gray-500">
-                                            Henüz sipariş bulunmuyor.
+                                            {orderStatusFilter !== "all"
+                                                ? "Bu kategoride sipariş bulunmuyor."
+                                                : "Henüz sipariş bulunmuyor."}
                                         </div>
                                     ) : (
                                         <div className="space-y-3">
-                                            {orders.map((order: any) => {
+                                            {filteredOrders.map((order: any) => {
                                                 const status = statusLabels[order.status] || statusLabels.pending;
                                                 const StatusIcon = status.icon;
                                                 return (
@@ -720,7 +1024,7 @@ export default function Admin() {
                                                         <div className="flex-1 min-w-0">
                                                             <div className="flex items-center gap-2">
                                                                 <h3 className="font-semibold text-gray-900">
-                                                                    Sipariş #{order.id}
+                                                                    Sipariş #{order.orderCode} <span className="text-gray-400 text-xs font-normal ml-1">(ID: {order.id})</span>
                                                                 </h3>
                                                                 <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${status.color}`}>
                                                                     <StatusIcon className="h-3 w-3 inline mr-1" />
@@ -742,47 +1046,81 @@ export default function Admin() {
                                                             </div>
                                                         </div>
                                                         <div className="flex gap-2">
-                                                            <Button
-                                                                variant="outline"
-                                                                size="sm"
-                                                                onClick={() => handleViewOrder(order.id)}
-                                                                className="h-9"
-                                                            >
-                                                                <Eye className="h-4 w-4 mr-1" />
-                                                                Detay
-                                                            </Button>
                                                             <Select
                                                                 value={order.status || "pending"}
-                                                                onValueChange={(value) => updateOrderStatusMutation.mutate({ id: order.id, status: value })}
+                                                                onValueChange={(value) => {
+                                                                    if (value === 'returned' || value === 'cancelled') {
+                                                                        setStatusDialogData({
+                                                                            orderId: order.id,
+                                                                            newStatus: value,
+                                                                            title: value === 'returned' ? 'Sipariş İade Nedeni' : 'Sipariş İptal Nedeni',
+                                                                            description: value === 'returned'
+                                                                                ? 'Lütfen bu sipariş için iade nedenini belirtiniz.'
+                                                                                : 'Lütfen bu sipariş için iptal nedenini belirtiniz.',
+                                                                            label: value === 'returned' ? 'İade Nedeni' : 'İptal Nedeni',
+                                                                            placeholder: value === 'returned' ? 'Ürün hasarlı, beden uymadı...' : 'Stok tükendi, müşteri vazgeçti...',
+                                                                            reason: ""
+                                                                        });
+                                                                        setIsStatusDialogOpen(true);
+                                                                    } else {
+                                                                        // Durum normale dönüyorsa, eski iptal/iade notunu temizle (statusDetail boş gönder)
+                                                                        updateOrderStatusMutation.mutate({
+                                                                            id: order.id,
+                                                                            status: value,
+                                                                            statusDetail: "" // Clear the detail
+                                                                        });
+                                                                    }
+                                                                }}
                                                             >
                                                                 <SelectTrigger className="h-9 w-44 bg-white">
                                                                     <span className={`flex items-center gap-2 text-sm font-medium ${order.status === 'processing' ? 'text-blue-600' :
-                                                                            order.status === 'shipped' ? 'text-purple-600' :
+                                                                        order.status === 'shipped' ? 'text-purple-600' :
+                                                                            order.status === 'outForDelivery' ? 'text-indigo-600' :
                                                                                 order.status === 'delivered' ? 'text-green-600' :
                                                                                     order.status === 'cancelled' ? 'text-red-600' :
-                                                                                        'text-yellow-600'
+                                                                                        order.status === 'returned' ? 'text-orange-600' :
+                                                                                            'text-yellow-600'
                                                                         }`}>
                                                                         {order.status === 'processing' ? '📦 Hazırlanıyor' :
                                                                             order.status === 'shipped' ? '🚚 Kargoda' :
-                                                                                order.status === 'delivered' ? '✅ Teslim Edildi' :
-                                                                                    order.status === 'cancelled' ? '❌ İptal' :
-                                                                                        '⏳ Beklemede'}
+                                                                                order.status === 'outForDelivery' ? '🚛 Dağıtıma Çıktı' :
+                                                                                    order.status === 'delivered' ? '✅ Teslim Edildi' :
+                                                                                        order.status === 'cancelled' ? '❌ İptal' :
+                                                                                            order.status === 'returned' ? '🔄 İade' :
+                                                                                                '⏳ Beklemede'}
                                                                     </span>
                                                                 </SelectTrigger>
                                                                 <SelectContent className="bg-white">
                                                                     <SelectItem value="pending" className="text-yellow-600 font-medium">⏳ Beklemede</SelectItem>
                                                                     <SelectItem value="processing" className="text-blue-600 font-medium">📦 Hazırlanıyor</SelectItem>
                                                                     <SelectItem value="shipped" className="text-purple-600 font-medium">🚚 Kargoda</SelectItem>
+                                                                    <SelectItem value="outForDelivery" className="text-indigo-600 font-medium">🚛 Dağıtıma Çıktı</SelectItem>
                                                                     <SelectItem value="delivered" className="text-green-600 font-medium">✅ Teslim Edildi</SelectItem>
-                                                                    <SelectItem value="cancelled" className="text-red-600 font-medium">❌ İptal</SelectItem>
+                                                                    <SelectItem value="cancelled" className="text-red-600 font-medium">❌ İptal Edildi</SelectItem>
+                                                                    <SelectItem value="returned" className="text-orange-600 font-medium">🔄 İade Edildi</SelectItem>
                                                                 </SelectContent>
                                                             </Select>
+                                                        </div>
+                                                        <div className="flex gap-2">
+                                                            <Button
+                                                                variant="outline"
+                                                                size="sm"
+                                                                onClick={() => {
+                                                                    setSelectedOrderId(order.id);
+                                                                    setIsOrderDetailOpen(true);
+                                                                }}
+                                                                className="h-9"
+                                                            >
+                                                                <Eye className="h-4 w-4 mr-1" />
+                                                                Detay
+                                                            </Button>
                                                         </div>
                                                     </div>
                                                 );
                                             })}
                                         </div>
-                                    )}
+                                    )
+                                    }
                                 </CardContent>
                             </Card>
                         </TabsContent>
@@ -895,9 +1233,15 @@ export default function Admin() {
                                                             <span className="text-sm font-bold text-gray-900">
                                                                 {product.price.toLocaleString("tr-TR")} ₺
                                                             </span>
-                                                            <span className="text-xs text-gray-500">
-                                                                • Stok: {product.stock}
-                                                            </span>
+                                                            {product.stock < 10 ? (
+                                                                <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-red-100 text-red-600">
+                                                                    ⚠️ Stok: {product.stock}
+                                                                </span>
+                                                            ) : (
+                                                                <span className="text-xs text-gray-500">
+                                                                    • Stok: {product.stock}
+                                                                </span>
+                                                            )}
                                                         </div>
                                                     </div>
                                                     <div className="flex gap-2">
@@ -941,6 +1285,148 @@ export default function Admin() {
                                 </CardHeader>
                                 <CardContent className="pt-6">
                                     <ProductForm />
+                                </CardContent>
+                            </Card>
+                        </TabsContent>
+
+                        {/* Payment Notifications Tab */}
+                        <TabsContent value="payments">
+                            <Card className="border shadow-sm">
+                                <CardHeader className="border-b bg-gray-50">
+                                    <CardTitle className="flex items-center gap-2">
+                                        <CreditCard className="h-5 w-5" />
+                                        Ödeme Bildirimleri
+                                    </CardTitle>
+                                    <CardDescription>
+                                        Havale/EFT ödeme bildirimlerini onaylayın veya reddedin
+                                    </CardDescription>
+                                </CardHeader>
+                                <CardContent className="p-0">
+                                    {notificationsLoading ? (
+                                        <div className="flex justify-center py-12">
+                                            <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
+                                        </div>
+                                    ) : !paymentNotifications || paymentNotifications.length === 0 ? (
+                                        <div className="text-center py-12 text-gray-500">
+                                            <CreditCard className="h-12 w-12 mx-auto text-gray-300 mb-4" />
+                                            <p>Henüz ödeme bildirimi yok</p>
+                                        </div>
+                                    ) : (
+                                        <div className="divide-y">
+                                            {paymentNotifications.map((notification: any) => (
+                                                <div key={notification.id} className={`p-6 ${notification.status === 'pending' ? 'bg-yellow-50' :
+                                                    notification.status === 'approved' ? 'bg-green-50' :
+                                                        notification.status === 'rejected' ? 'bg-red-50' : ''
+                                                    }`}>
+                                                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                                                        <div className="space-y-2">
+                                                            <div className="flex items-center gap-2">
+                                                                <span className="font-bold text-lg">#{notification.order?.orderCode || 'N/A'}</span>
+                                                                <span className={`px-2 py-1 rounded-full text-xs font-bold ${notification.status === 'pending' ? 'bg-yellow-200 text-yellow-800' :
+                                                                    notification.status === 'approved' ? 'bg-green-200 text-green-800' :
+                                                                        'bg-red-200 text-red-800'
+                                                                    }`}>
+                                                                    {notification.status === 'pending' ? '⏳ Bekliyor' :
+                                                                        notification.status === 'approved' ? '✅ Onaylandı' : '❌ Reddedildi'}
+                                                                </span>
+                                                            </div>
+                                                            <div className="grid grid-cols-2 gap-4 text-sm">
+                                                                <div>
+                                                                    <span className="text-gray-500">Gönderen:</span>
+                                                                    <p className="font-medium">{notification.senderName}</p>
+                                                                </div>
+                                                                <div>
+                                                                    <span className="text-gray-500">Banka:</span>
+                                                                    <p className="font-medium">{notification.bankName}</p>
+                                                                </div>
+                                                                <div>
+                                                                    <span className="text-gray-500">Tutar:</span>
+                                                                    <p className="font-bold text-green-600">{notification.amount.toLocaleString('tr-TR')} ₺</p>
+                                                                </div>
+                                                                <div>
+                                                                    <span className="text-gray-500">Tarih:</span>
+                                                                    <p className="font-medium">{notification.transferDate}</p>
+                                                                </div>
+                                                            </div>
+                                                            {notification.order && (
+                                                                <div className="text-sm text-gray-600 bg-gray-50 p-3 rounded-lg border border-gray-100 mt-2">
+                                                                    <div className="flex items-center gap-2 mb-2 pb-2 border-b border-gray-100">
+                                                                        <User className="h-4 w-4 text-gray-500" />
+                                                                        <span className="font-semibold text-gray-900">{notification.order.customerName}</span>
+                                                                    </div>
+                                                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                                                                        <span className="flex items-center gap-1.5" title="Telefon">
+                                                                            <Phone className="h-3.5 w-3.5 text-gray-400" />
+                                                                            {notification.order.customerPhone}
+                                                                        </span>
+                                                                        <span className="flex items-center gap-1.5" title="E-posta">
+                                                                            <Mail className="h-3.5 w-3.5 text-gray-400" />
+                                                                            {notification.order.customerEmail}
+                                                                        </span>
+                                                                        <span className="flex items-center gap-1.5 col-span-2 pt-1 font-medium text-gray-900 text-sm">
+                                                                            Sipariş Tutarı: {notification.order.totalAmount.toLocaleString('tr-TR')} ₺
+                                                                        </span>
+                                                                    </div>
+                                                                </div>
+                                                            )}
+                                                            {notification.adminNote && (
+                                                                <div className="text-sm italic text-gray-600 bg-white p-2 rounded border">
+                                                                    Not: {notification.adminNote}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                        {notification.status === 'pending' ? (
+                                                            <div className="flex gap-2">
+                                                                <Button
+                                                                    onClick={() => setApprovePaymentId(notification.id)}
+                                                                    className="bg-green-600 hover:bg-green-700"
+                                                                    disabled={approveNotificationMutation.isPending}
+                                                                >
+                                                                    <CheckCircle className="h-4 w-4 mr-1" />
+                                                                    Onayla
+                                                                </Button>
+                                                                <Button
+                                                                    variant="destructive"
+                                                                    onClick={() => {
+                                                                        setRejectPaymentId(notification.id);
+                                                                        setRejectReason("");
+                                                                    }}
+                                                                    disabled={rejectNotificationMutation.isPending}
+                                                                >
+                                                                    <XCircle className="h-4 w-4 mr-1" />
+                                                                    Reddet
+                                                                </Button>
+                                                            </div>
+                                                        ) : (
+                                                            <div className="flex items-center gap-2 mt-2 sm:mt-0">
+                                                                <DropdownMenu>
+                                                                    <DropdownMenuTrigger asChild>
+                                                                        <Button variant="outline" size="sm" className="h-8">
+                                                                            <Edit className="h-3.5 w-3.5 mr-1" />
+                                                                            Düzenle
+                                                                        </Button>
+                                                                    </DropdownMenuTrigger>
+                                                                    <DropdownMenuContent align="end">
+                                                                        <DropdownMenuItem onClick={() => setApprovePaymentId(notification.id)}>
+                                                                            <CheckCircle className="mr-2 h-4 w-4 text-green-600" />
+                                                                            Tekrar Onayla
+                                                                        </DropdownMenuItem>
+                                                                        <DropdownMenuItem onClick={() => {
+                                                                            setRejectPaymentId(notification.id);
+                                                                            setRejectReason("");
+                                                                        }} className="text-red-600">
+                                                                            <XCircle className="mr-2 h-4 w-4" />
+                                                                            Tekrar Reddet
+                                                                        </DropdownMenuItem>
+                                                                    </DropdownMenuContent>
+                                                                </DropdownMenu>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
                                 </CardContent>
                             </Card>
                         </TabsContent>
@@ -1063,8 +1549,174 @@ export default function Admin() {
                                     {selectedOrder.order.totalAmount?.toLocaleString("tr-TR")} ₺
                                 </span>
                             </div>
+
+                            {/* Order Notes */}
+                            <div className="border-t pt-4 mt-4">
+                                <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
+                                    <MessageSquare className="h-4 w-4" />
+                                    Sipariş Notları ve Geçmişi
+                                </h3>
+                                <div className="bg-gray-50 rounded-lg p-4 border">
+                                    <OrderNotes orderId={selectedOrder.order.id} />
+                                </div>
+                            </div>
                         </div>
                     ) : null}
+                </DialogContent>
+            </Dialog>
+
+            {/* Delete Product Alert */}
+            <AlertDialog open={!!deleteProductId} onOpenChange={(open) => !open && setDeleteProductId(null)}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Emin misiniz?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            Bu ürünü silmek istediğinize emin misiniz? Bu işlem geri alınamaz.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel>İptal</AlertDialogCancel>
+                        <AlertDialogAction
+                            onClick={() => {
+                                if (deleteProductId) {
+                                    deleteProductMutation.mutate(deleteProductId);
+                                    setDeleteProductId(null);
+                                }
+                            }}
+                            className="bg-red-600 hover:bg-red-700"
+                        >
+                            Sil
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+
+            {/* Approve Payment Alert */}
+            <AlertDialog open={!!approvePaymentId} onOpenChange={(open) => !open && setApprovePaymentId(null)}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Ödemeyi Onayla</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            Bu ödeme bildirimini onaylamak istediğinize emin misiniz? Sipariş durumu "Hazırlanıyor" olarak güncellenecektir.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel>İptal</AlertDialogCancel>
+                        <AlertDialogAction
+                            onClick={() => {
+                                if (approvePaymentId) {
+                                    approveNotificationMutation.mutate({ id: approvePaymentId });
+                                    setApprovePaymentId(null);
+                                }
+                            }}
+                            className="bg-green-600 hover:bg-green-700"
+                        >
+                            Onayla
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+
+            {/* Reject Payment Dialog */}
+            <Dialog open={!!rejectPaymentId} onOpenChange={(open) => !open && setRejectPaymentId(null)}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Ödemeyi Reddet</DialogTitle>
+                        <DialogDescription>
+                            Lütfen ret sebebini giriniz. Bu not kullanıcı tarafından görülebilecektir.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="py-4">
+                        <Label htmlFor="rejectReason" className="mb-2 block">Red Sebebi</Label>
+                        <Textarea
+                            id="rejectReason"
+                            value={rejectReason}
+                            onChange={(e) => setRejectReason(e.target.value)}
+                            placeholder="Sipariş tutarı hesabıma geçmedi..."
+                            className="mb-2"
+                        />
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setRejectReason("Ödemeniz onaylanmadı. Tutar 1-3 iş günü içinde hesabınıza iade edilecektir.")}
+                            className="text-xs"
+                        >
+                            <MessageSquare className="h-3.5 w-3.5 mr-1" />
+                            Otomatik İade Mesajı Ekle
+                        </Button>
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setRejectPaymentId(null)}>İptal</Button>
+                        <Button
+                            variant="destructive"
+                            onClick={() => {
+                                if (rejectPaymentId && rejectReason.trim()) {
+                                    rejectNotificationMutation.mutate({ id: rejectPaymentId, adminNote: rejectReason });
+                                    setRejectPaymentId(null);
+                                }
+                            }}
+                            disabled={!rejectReason.trim()}
+                        >
+                            Reddet
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Status Change Dialog (Cancel / Return) */}
+            <Dialog open={isStatusDialogOpen} onOpenChange={setIsStatusDialogOpen}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>{statusDialogData?.title}</DialogTitle>
+                        <DialogDescription>
+                            {statusDialogData?.description} Bu bilgi müşteriye gösterilecektir.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="py-4">
+                        <Label htmlFor="statusReason" className="mb-2 block">{statusDialogData?.label}</Label>
+                        <Textarea
+                            id="statusReason"
+                            value={statusDialogData?.reason || ""}
+                            onChange={(e) => setStatusDialogData(prev => prev ? ({ ...prev, reason: e.target.value }) : null)}
+                            placeholder={statusDialogData?.placeholder}
+                        />
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setIsStatusDialogOpen(false)}>İptal</Button>
+                        <Button
+                            onClick={async () => {
+                                if (statusDialogData) {
+                                    try {
+                                        // 1. Create note for cancellation/return reason
+                                        if (statusDialogData.reason) {
+                                            await apiRequest("POST", `/api/admin/orders/${statusDialogData.orderId}/notes`, {
+                                                note: statusDialogData.reason,
+                                                noteType: statusDialogData.newStatus === 'returned' ? 'return' : 'cancellation'
+                                            });
+                                            // Invalidate notes query to refresh list
+                                            queryClient.invalidateQueries({ queryKey: [`/api/admin/orders/${statusDialogData.orderId}/notes`] });
+                                        }
+
+                                        // 2. Update order status
+                                        updateOrderStatusMutation.mutate({
+                                            id: statusDialogData.orderId,
+                                            status: statusDialogData.newStatus,
+                                            statusDetail: "" // Clear legacy detail field
+                                        });
+                                        setIsStatusDialogOpen(false);
+                                    } catch (error) {
+                                        toast({
+                                            title: "Hata",
+                                            description: "İşlem sırasında bir hata oluştu.",
+                                            variant: "destructive",
+                                        });
+                                    }
+                                }
+                            }}
+                        >
+                            Kaydet ve Güncelle
+                        </Button>
+                    </DialogFooter>
                 </DialogContent>
             </Dialog>
 
