@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -74,9 +75,12 @@ import {
     Package2,
     RotateCcw,
     CreditCard,
-    Building2
+    Building2,
+    Headphones,
+    Send
 } from "lucide-react";
 import { OrderNotes } from "@/components/OrderNotes";
+import { StockImportPanel } from "@/components/StockImportPanel";
 import { apiRequest } from "@/lib/queryClient";
 import { api } from "@shared/routes";
 
@@ -102,6 +106,343 @@ const initialFormData: ProductFormData = {
     stock: 10,
     colors: "",
     specs: "",
+};
+
+// Live Support Panel Component
+const LiveSupportPanel = () => {
+    const { user, isAdmin } = useAuth();
+    const { toast } = useToast();
+    const [selectedChat, setSelectedChat] = useState<any>(null);
+    const [chatMessages, setChatMessages] = useState<any[]>([]);
+    const [messageInput, setMessageInput] = useState("");
+    const [isJoining, setIsJoining] = useState(false);
+    const [chatListTab, setChatListTab] = useState<"active" | "waiting">("waiting");
+
+    const categoryLabels: Record<string, string> = {
+        order: "Sipariş Takibi",
+        product: "Ürün Bilgisi",
+        return: "İade / Değişim",
+        payment: "Ödeme Sorunu",
+        other: "Diğer",
+    };
+
+    // Fetch waiting sessions
+    const { data: waitingSessions, isLoading: waitingLoading, refetch: refetchWaiting } = useQuery({
+        queryKey: ["/api/admin/chat/waiting"],
+        queryFn: async () => {
+            const res = await fetch("/api/admin/chat/waiting", { credentials: "include" });
+            if (!res.ok) throw new Error("Bekleyen sohbetler alınamadı");
+            return res.json();
+        },
+        enabled: !!isAdmin,
+        refetchInterval: 5000, // Poll every 5 seconds
+    });
+
+    // Fetch active sessions (AGENT_MODE - chats admin has joined)
+    const { data: activeSessions, isLoading: activeLoading, refetch: refetchActive } = useQuery({
+        queryKey: ["/api/admin/chat/active"],
+        queryFn: async () => {
+            const res = await fetch("/api/admin/chat/active", { credentials: "include" });
+            if (!res.ok) throw new Error("Aktif sohbetler alınamadı");
+            return res.json();
+        },
+        enabled: !!isAdmin,
+        refetchInterval: 5000, // Poll every 5 seconds
+    });
+
+    const handleJoinChat = async (sessionId: string) => {
+        setIsJoining(true);
+        try {
+            const res = await fetch(`/api/admin/chat/${sessionId}/join`, {
+                method: "POST",
+                credentials: "include",
+            });
+            if (!res.ok) throw new Error("Sohbete katılınamadı");
+            const data = await res.json();
+            setSelectedChat(data.session);
+            setChatMessages(data.messages || []);
+            refetchWaiting();
+            refetchActive();
+            toast({ title: "Başarılı", description: "Sohbete katıldınız!" });
+        } catch (err) {
+            toast({ title: "Hata", description: "Sohbete katılırken hata oluştu", variant: "destructive" });
+        } finally {
+            setIsJoining(false);
+        }
+    };
+
+    // Resume an active chat (go back into chat view without changing status)
+    const handleResumeChat = async (session: any) => {
+        try {
+            const res = await fetch(`/api/chat/session/${session.id}`, { credentials: "include" });
+            if (!res.ok) throw new Error("Sohbet yüklenemedi");
+            const data = await res.json();
+            setSelectedChat(data.session);
+            setChatMessages(data.messages || []);
+        } catch (err) {
+            toast({ title: "Hata", description: "Sohbet yüklenirken hata oluştu", variant: "destructive" });
+        }
+    };
+
+    const handleSendMessage = async () => {
+        if (!messageInput.trim() || !selectedChat) return;
+
+        try {
+            // Use REST API to send message (simpler than WebSocket for admin)
+            const res = await fetch("/api/chat/send", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify({
+                    chatSessionId: selectedChat.id,
+                    content: messageInput,
+                    sender: "AGENT",
+                }),
+            });
+
+            if (res.ok) {
+                // Refresh messages
+                const msgRes = await fetch(`/api/chat/session/${selectedChat.id}`, { credentials: "include" });
+                if (msgRes.ok) {
+                    const data = await msgRes.json();
+                    setChatMessages(data.messages || []);
+                }
+                setMessageInput("");
+            }
+        } catch (err) {
+            toast({ title: "Hata", description: "Mesaj gönderilemedi", variant: "destructive" });
+        }
+    };
+
+    const handleCloseChat = async () => {
+        if (!selectedChat) return;
+        try {
+            await fetch(`/api/admin/chat/${selectedChat.id}/close`, {
+                method: "POST",
+                credentials: "include",
+            });
+            setSelectedChat(null);
+            setChatMessages([]);
+            refetchWaiting();
+            refetchActive();
+            toast({ title: "Başarılı", description: "Sohbet kapatıldı" });
+        } catch (err) {
+            toast({ title: "Hata", description: "Sohbet kapatılırken hata oluştu", variant: "destructive" });
+        }
+    };
+
+    // Handle back to list (without closing chat)
+    const handleBackToList = () => {
+        setSelectedChat(null);
+        setChatMessages([]);
+        // Refetch to update lists
+        refetchActive();
+    };
+
+    if (selectedChat) {
+        // Active Chat View
+        return (
+            <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                    <Button variant="outline" onClick={handleBackToList}>
+                        ← Listeye Dön
+                    </Button>
+                    <div className="flex items-center gap-2">
+                        <span className="text-sm text-gray-500">
+                            {selectedChat.customerName || selectedChat.customerEmail || "Anonim Müşteri"}
+                        </span>
+                        <Button variant="destructive" size="sm" onClick={handleCloseChat}>
+                            <XCircle className="h-4 w-4 mr-1" /> Görüşmeyi Sonlandır
+                        </Button>
+                    </div>
+                </div>
+
+                {/* Messages */}
+                <div className="border rounded-lg h-[400px] overflow-y-auto p-4 bg-gray-50 space-y-3">
+                    {chatMessages.map((msg: any) => (
+                        <div
+                            key={msg.id}
+                            className={`flex ${msg.sender === 'USER' ? 'justify-start' : 'justify-end'}`}
+                        >
+                            <div
+                                className={`max-w-[70%] rounded-xl px-4 py-2 ${msg.sender === 'USER'
+                                    ? 'bg-gray-200 text-gray-800'
+                                    : msg.sender === 'BOT'
+                                        ? 'bg-orange-100 text-orange-800'
+                                        : 'bg-green-500 text-white'
+                                    }`}
+                            >
+                                <div className="text-xs opacity-70 mb-1">
+                                    {msg.sender === 'USER' ? 'Müşteri' : msg.sender === 'BOT' ? 'MotoBot' : 'Siz'}
+                                </div>
+                                <p className="text-sm">{msg.content.replace(/^\[.*?\]\s*/, '')}</p>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+
+                {/* Input */}
+                <div className="flex gap-2">
+                    <Input
+                        value={messageInput}
+                        onChange={(e) => setMessageInput(e.target.value)}
+                        placeholder="Mesajınızı yazın..."
+                        onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+                    />
+                    <Button onClick={handleSendMessage} disabled={!messageInput.trim()}>
+                        <Send className="h-4 w-4 mr-1" /> Gönder
+                    </Button>
+                </div>
+            </div>
+        );
+    }
+
+    // Sessions List View with Tabs
+    return (
+        <div className="space-y-4">
+            {/* Tab Headers */}
+            <div className="flex border-b">
+                <button
+                    onClick={() => setChatListTab("active")}
+                    className={`flex items-center gap-2 px-4 py-3 font-medium text-sm border-b-2 transition-colors ${chatListTab === "active"
+                        ? "border-green-500 text-green-600"
+                        : "border-transparent text-gray-500 hover:text-gray-700"
+                        }`}
+                >
+                    <Headphones className="h-4 w-4" />
+                    Aktif Sohbetler
+                    {activeSessions && activeSessions.length > 0 && (
+                        <Badge className="bg-green-500 text-white h-5 w-5 p-0 flex items-center justify-center text-xs">
+                            {activeSessions.length}
+                        </Badge>
+                    )}
+                </button>
+                <button
+                    onClick={() => setChatListTab("waiting")}
+                    className={`flex items-center gap-2 px-4 py-3 font-medium text-sm border-b-2 transition-colors ${chatListTab === "waiting"
+                        ? "border-orange-500 text-orange-600"
+                        : "border-transparent text-gray-500 hover:text-gray-700"
+                        }`}
+                >
+                    <Clock className="h-4 w-4" />
+                    Bekleyen Sohbetler
+                    {waitingSessions && waitingSessions.length > 0 && (
+                        <Badge className="bg-orange-500 text-white h-5 w-5 p-0 flex items-center justify-center text-xs">
+                            {waitingSessions.length}
+                        </Badge>
+                    )}
+                </button>
+            </div>
+
+            {/* Tab Content */}
+            {chatListTab === "active" ? (
+                /* Active Sessions (AGENT_MODE) */
+                <div>
+                    {activeLoading ? (
+                        <div className="flex justify-center py-8">
+                            <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
+                        </div>
+                    ) : !activeSessions || activeSessions.length === 0 ? (
+                        <div className="text-center py-12 text-gray-400 bg-gray-50 rounded-lg">
+                            <Headphones className="h-10 w-10 mx-auto mb-3 opacity-30" />
+                            <p>Şu anda aktif görüşme yok</p>
+                            <p className="text-sm">Katıldığınız görüşmeler burada görünecek</p>
+                        </div>
+                    ) : (
+                        <div className="space-y-2">
+                            {activeSessions.map((session: any) => (
+                                <div
+                                    key={session.id}
+                                    className="border rounded-lg p-4 bg-green-50 border-green-200 flex items-center justify-between hover:border-green-400 transition-colors cursor-pointer"
+                                    onClick={() => handleResumeChat(session)}
+                                >
+                                    <div>
+                                        <div className="flex items-center gap-2 mb-1">
+                                            <Badge className="text-xs bg-green-500">Aktif</Badge>
+                                            {session.category && (
+                                                <Badge variant="outline" className="text-xs">
+                                                    {categoryLabels[session.category] || session.category}
+                                                </Badge>
+                                            )}
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <User className="h-4 w-4 text-gray-400" />
+                                            <span className="font-medium">
+                                                {session.customerName || session.customerEmail || "Anonim Müşteri"}
+                                            </span>
+                                        </div>
+                                    </div>
+                                    <Button variant="outline" size="sm" className="border-green-300 text-green-700 hover:bg-green-100">
+                                        <MessageSquare className="h-4 w-4 mr-1" /> Devam Et
+                                    </Button>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            ) : (
+                /* Waiting Sessions (WAITING_FOR_AGENT) */
+                <div>
+                    {waitingLoading ? (
+                        <div className="flex justify-center py-8">
+                            <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
+                        </div>
+                    ) : !waitingSessions || waitingSessions.length === 0 ? (
+                        <div className="text-center py-12 text-gray-500 bg-gray-50 rounded-lg">
+                            <Headphones className="h-10 w-10 mx-auto mb-3 opacity-30" />
+                            <p>Bekleyen sohbet yok</p>
+                            <p className="text-sm">Müşteriler destek istediğinde burada görünecek</p>
+                        </div>
+                    ) : (
+                        <div className="space-y-2">
+                            {waitingSessions.map((session: any) => (
+                                <div
+                                    key={session.id}
+                                    className="border rounded-lg p-4 bg-white flex items-center justify-between hover:border-orange-300 transition-colors"
+                                >
+                                    <div>
+                                        <div className="flex items-center gap-2 mb-1">
+                                            {session.category && (
+                                                <Badge variant="outline" className="text-xs bg-orange-50 text-orange-700 border-orange-200">
+                                                    {categoryLabels[session.category] || session.category}
+                                                </Badge>
+                                            )}
+                                            <span className="text-xs text-gray-400">
+                                                {new Date(session.updatedAt).toLocaleString('tr-TR')}
+                                            </span>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <User className="h-4 w-4 text-gray-400" />
+                                            <span className="font-medium">
+                                                {session.customerName || session.customerEmail || "Anonim Müşteri"}
+                                            </span>
+                                        </div>
+                                        {session.lastMessage && (
+                                            <p className="text-sm text-gray-500 mt-1 truncate max-w-md">
+                                                "{session.lastMessage}"
+                                            </p>
+                                        )}
+                                    </div>
+                                    <Button
+                                        onClick={() => handleJoinChat(session.id)}
+                                        disabled={isJoining}
+                                        className="bg-orange-500 hover:bg-orange-600"
+                                    >
+                                        {isJoining ? (
+                                            <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                                        ) : (
+                                            <Headphones className="h-4 w-4 mr-1" />
+                                        )}
+                                        Katıl
+                                    </Button>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+    );
 };
 
 export default function Admin() {
@@ -543,6 +884,8 @@ export default function Admin() {
         );
     }
 
+
+
     // Product Form Component
     const ProductForm = ({ isDialog = false }: { isDialog?: boolean }) => (
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -901,6 +1244,13 @@ export default function Admin() {
                             >
                                 <CreditCard className="h-4 w-4 mr-2" />
                                 Ödeme Bildirimleri ({paymentNotifications?.filter((n: any) => n.status === 'pending').length || 0})
+                            </TabsTrigger>
+                            <TabsTrigger
+                                value="livesupport"
+                                className="rounded-md data-[state=active]:bg-black data-[state=active]:text-white px-4"
+                            >
+                                <Headphones className="h-4 w-4 mr-2" />
+                                Canlı Destek
                             </TabsTrigger>
                         </TabsList>
 
@@ -1287,6 +1637,11 @@ export default function Admin() {
                                     <ProductForm />
                                 </CardContent>
                             </Card>
+
+                            {/* Stock Import Panel */}
+                            <div className="mt-6">
+                                <StockImportPanel />
+                            </div>
                         </TabsContent>
 
                         {/* Payment Notifications Tab */}
@@ -1427,6 +1782,28 @@ export default function Admin() {
                                             ))}
                                         </div>
                                     )}
+                                </CardContent>
+                            </Card>
+                        </TabsContent>
+
+                        {/* Live Support Tab */}
+                        <TabsContent value="livesupport">
+                            <Card className="border shadow-sm">
+                                <CardHeader className="border-b bg-gray-50">
+                                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                                        <div>
+                                            <CardTitle className="flex items-center gap-2">
+                                                <Headphones className="h-5 w-5" />
+                                                Canlı Destek
+                                            </CardTitle>
+                                            <CardDescription>
+                                                Bekleyen müşteri sohbetlerini yönetin
+                                            </CardDescription>
+                                        </div>
+                                    </div>
+                                </CardHeader>
+                                <CardContent className="p-6">
+                                    <LiveSupportPanel />
                                 </CardContent>
                             </Card>
                         </TabsContent>

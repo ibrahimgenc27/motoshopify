@@ -23,8 +23,16 @@ import {
   type InsertOrderNote,
   type OrderNote,
   orderNotes,
+  // Chat imports
+  chatSessions,
+  chatMessages,
+  type ChatSession,
+  type ChatMessage,
+  type InsertChatSession,
+  type InsertChatMessage,
 } from "@shared/schema";
 import { eq, and, isNull, desc } from "drizzle-orm";
+import { randomUUID } from "crypto";
 
 export interface IStorage {
   getProducts(): Promise<Product[]>;
@@ -72,6 +80,21 @@ export interface IStorage {
   getOrderNotes(orderId: number): Promise<OrderNote[]>;
   updateOrderNote(id: number, note: string): Promise<OrderNote>;
   deleteOrderNote(id: number): Promise<void>;
+
+  // Chat Session methods
+  createChatSession(sessionId: string, userId?: number, customerName?: string, customerEmail?: string): Promise<ChatSession>;
+  getChatSession(id: string): Promise<ChatSession | undefined>;
+  getChatSessionBySessionId(sessionId: string, userId?: number): Promise<ChatSession | undefined>;
+  getActiveChatSessions(): Promise<ChatSession[]>;
+  getWaitingChatSessions(): Promise<ChatSession[]>;
+  updateChatSessionStatus(id: string, status: string, agentId?: number): Promise<ChatSession>;
+  closeChatSession(id: string): Promise<ChatSession>;
+
+  // Chat Message methods
+  createChatMessage(message: Omit<InsertChatMessage, 'id'>): Promise<ChatMessage>;
+  getChatMessages(chatSessionId: string): Promise<ChatMessage[]>;
+  markMessagesAsRead(chatSessionId: string, sender: string): Promise<void>;
+  getUnreadMessageCount(chatSessionId: string): Promise<number>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -431,6 +454,192 @@ export class DatabaseStorage implements IStorage {
 
   async deleteOrderNote(id: number): Promise<void> {
     await db.delete(orderNotes).where(eq(orderNotes.id, id));
+  }
+
+  // ============================================
+  // CHAT SESSION METHODS
+  // ============================================
+
+  async createChatSession(
+    sessionId: string,
+    userId?: number,
+    customerName?: string,
+    customerEmail?: string,
+    category?: string
+  ): Promise<ChatSession> {
+    const id = randomUUID();
+    const [session] = await db.insert(chatSessions).values({
+      id,
+      sessionId,
+      userId: userId || null,
+      customerName: customerName || null,
+      customerEmail: customerEmail || null,
+      category: category || null,
+      status: 'BOT_MODE',
+    }).returning();
+    return session;
+  }
+
+  async getChatSession(id: string): Promise<ChatSession | undefined> {
+    const [session] = await db.select().from(chatSessions).where(eq(chatSessions.id, id));
+    return session;
+  }
+
+  async getChatSessionBySessionId(sessionId: string, userId?: number): Promise<ChatSession | undefined> {
+    // Kullanıcıya özgü en son aktif oturumu getir
+    const conditions = [eq(chatSessions.sessionId, sessionId)];
+
+    // Eğer userId verilmişse, sadece o kullanıcının session'larını getir
+    if (userId !== undefined) {
+      if (userId === null) {
+        // Misafir kullanıcı - userId null olanları getir
+        conditions.push(isNull(chatSessions.userId));
+      } else {
+        // Giriş yapmış kullanıcı - userId eşleşenlerini getir
+        conditions.push(eq(chatSessions.userId, userId));
+      }
+    }
+
+    const [session] = await db
+      .select()
+      .from(chatSessions)
+      .where(and(...conditions))
+      .orderBy(desc(chatSessions.updatedAt))
+      .limit(1);
+
+    // Eğer session CLOSED ise undefined döndür (yeni session oluşturulsun)
+    if (session && session.status === 'CLOSED') {
+      return undefined;
+    }
+    return session;
+  }
+
+  async getActiveChatSessions(): Promise<ChatSession[]> {
+    return await db
+      .select()
+      .from(chatSessions)
+      .where(
+        and(
+          eq(chatSessions.status, 'AGENT_MODE'),
+        )
+      )
+      .orderBy(desc(chatSessions.updatedAt));
+  }
+
+  async getWaitingChatSessions(): Promise<ChatSession[]> {
+    return await db
+      .select()
+      .from(chatSessions)
+      .where(eq(chatSessions.status, 'WAITING_FOR_AGENT'))
+      .orderBy(desc(chatSessions.updatedAt));
+  }
+
+  async updateChatSessionStatus(
+    id: string,
+    status: string,
+    agentId?: number
+  ): Promise<ChatSession> {
+    const updateData: Partial<ChatSession> = {
+      status,
+      updatedAt: new Date(),
+    };
+
+    if (agentId !== undefined) {
+      updateData.agentId = agentId;
+    }
+
+    const [updated] = await db
+      .update(chatSessions)
+      .set(updateData)
+      .where(eq(chatSessions.id, id))
+      .returning();
+    return updated;
+  }
+
+  async closeChatSession(id: string): Promise<ChatSession> {
+    const [closed] = await db
+      .update(chatSessions)
+      .set({ status: 'CLOSED', updatedAt: new Date() })
+      .where(eq(chatSessions.id, id))
+      .returning();
+    return closed;
+  }
+
+  async updateChatSessionUser(
+    id: string,
+    userId: number,
+    customerName?: string,
+    customerEmail?: string
+  ): Promise<ChatSession> {
+    const [updated] = await db
+      .update(chatSessions)
+      .set({
+        userId,
+        customerName: customerName || null,
+        customerEmail: customerEmail || null,
+        updatedAt: new Date(),
+      })
+      .where(eq(chatSessions.id, id))
+      .returning();
+    return updated;
+  }
+
+  // ============================================
+  // CHAT MESSAGE METHODS
+  // ============================================
+
+  async createChatMessage(
+    message: Omit<InsertChatMessage, 'id'>
+  ): Promise<ChatMessage> {
+    const id = randomUUID();
+    const [newMessage] = await db.insert(chatMessages).values({
+      id,
+      ...message,
+    }).returning();
+
+    // Session'ın updatedAt'ini güncelle
+    await db
+      .update(chatSessions)
+      .set({ updatedAt: new Date() })
+      .where(eq(chatSessions.id, message.chatSessionId));
+
+    return newMessage;
+  }
+
+  async getChatMessages(chatSessionId: string): Promise<ChatMessage[]> {
+    return await db
+      .select()
+      .from(chatMessages)
+      .where(eq(chatMessages.chatSessionId, chatSessionId))
+      .orderBy(chatMessages.createdAt); // Eskiden yeniye sırala
+  }
+
+  async markMessagesAsRead(chatSessionId: string, sender: string): Promise<void> {
+    // Belirtilen sender'dan GELMEYEŇ mesajları okundu olarak işaretle
+    // Örn: USER mesajları okundu yapmak için sender='USER' gönder
+    // Bu, o sender'ın gönderdiği mesajları değil, o sender'ın ALDIĞI mesajları işaretler
+    await db
+      .update(chatMessages)
+      .set({ isRead: true })
+      .where(
+        and(
+          eq(chatMessages.chatSessionId, chatSessionId),
+          // sender'ın kendisi DIŞINDA gönderilmiş mesajlar
+        )
+      );
+  }
+
+  async getUnreadMessageCount(chatSessionId: string): Promise<number> {
+    const messages = await db
+      .select()
+      .from(chatMessages)
+      .where(
+        and(
+          eq(chatMessages.chatSessionId, chatSessionId),
+          eq(chatMessages.isRead, false)
+        )
+      );
+    return messages.length;
   }
 }
 

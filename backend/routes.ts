@@ -9,7 +9,11 @@ import multer from "multer";
 import path from "path";
 
 import fs from "fs";
-import { insertOrderNoteSchema } from "@shared/schema";
+import * as XLSX from "xlsx";
+import { insertOrderNoteSchema, ChatStatus } from "@shared/schema";
+import { WebSocketServer, WebSocket } from "ws";
+import { processMessage, getWelcomeMessage, clearConversationContext } from "./botEngine";
+
 
 // Configure multer for file uploads
 const uploadDir = path.join(process.cwd(), "public", "uploads");
@@ -336,6 +340,195 @@ export async function registerRoutes(
     });
   });
 
+  // ==================== STOCK IMPORT ROUTES ====================
+
+  // Download stock template (admin only)
+  app.get("/api/admin/stock-template", async (req: Request, res: Response) => {
+    await requireAdmin(req, res, async () => {
+      try {
+        const products = await storage.getProducts();
+
+        // Excel için veri hazırla
+        const data = products.map(p => ({
+          "Ürün Adı": p.name,
+          "Mevcut Stok": p.stock || 0,
+          "Yeni Stok": "" // Kullanıcının dolduracağı alan
+        }));
+
+        // Workbook oluştur
+        const wb = XLSX.utils.book_new();
+        const ws = XLSX.utils.json_to_sheet(data);
+
+        // Sütun genişlikleri
+        ws["!cols"] = [
+          { wch: 40 }, // Ürün Adı
+          { wch: 12 }, // Mevcut Stok
+          { wch: 12 }  // Yeni Stok
+        ];
+
+        XLSX.utils.book_append_sheet(wb, ws, "Stok Listesi");
+
+        // Buffer olarak kaydet
+        const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+
+        res.setHeader("Content-Disposition", 'attachment; filename="stok-sablonu.xlsx"');
+        res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        res.send(buffer);
+      } catch (err) {
+        console.error("Stock template error:", err);
+        res.status(500).json({ message: "Şablon oluşturulurken hata oluştu" });
+      }
+    });
+  });
+
+  // Upload and import stock from Excel (admin only)
+  app.post("/api/admin/stock-import", upload.single("file"), async (req: Request, res: Response) => {
+    await requireAdmin(req, res, async () => {
+      try {
+        if (!req.file) {
+          return res.status(400).json({ message: "Lütfen bir Excel dosyası yükleyin" });
+        }
+
+        // Excel dosyasını oku
+        const workbook = XLSX.readFile(req.file.path);
+        const sheetName = workbook.SheetNames[0];
+        const sheet = workbook.Sheets[sheetName];
+        const rows: any[] = XLSX.utils.sheet_to_json(sheet);
+
+        if (rows.length === 0) {
+          // Yüklenen dosyayı sil
+          fs.unlinkSync(req.file.path);
+          return res.status(400).json({ message: "Excel dosyası boş veya geçersiz format" });
+        }
+
+        // Mevcut ürünleri çek
+        const products = await storage.getProducts();
+        const productMap = new Map(products.map(p => [p.name.toLowerCase().trim(), p]));
+
+        const updated: { name: string; oldStock: number; newStock: number }[] = [];
+        const errors: { row: number; name: string; error: string }[] = [];
+
+        for (let i = 0; i < rows.length; i++) {
+          const row = rows[i];
+          const rowNumber = i + 2; // Excel'de satır 2'den başlar (1 header)
+
+          // Sütun isimlerini kontrol et
+          const productName = row["Ürün Adı"]?.toString().trim();
+          const newStockRaw = row["Yeni Stok"];
+
+          // Yeni stok boşsa atla
+          if (newStockRaw === undefined || newStockRaw === null || newStockRaw === "") {
+            continue;
+          }
+
+          // Ürün adı yoksa hata
+          if (!productName) {
+            errors.push({
+              row: rowNumber,
+              name: "(boş)",
+              error: "Ürün adı boş bırakılamaz"
+            });
+            continue;
+          }
+
+          // Yeni stok sayı mı kontrol et
+          const newStock = parseInt(newStockRaw, 10);
+          if (isNaN(newStock) || newStock < 0) {
+            errors.push({
+              row: rowNumber,
+              name: productName,
+              error: `Geçersiz stok değeri: "${newStockRaw}" - Lütfen pozitif bir sayı girin`
+            });
+            continue;
+          }
+
+          // Ürünü bul
+          const product = productMap.get(productName.toLowerCase());
+
+          if (!product) {
+            // Benzer ürün adı öner
+            let suggestion = "";
+            const productNames = products.map(p => p.name);
+            const similar = findSimilarProductName(productName, productNames);
+            if (similar) {
+              suggestion = ` Benzer ürün: "${similar}"`;
+            }
+
+            errors.push({
+              row: rowNumber,
+              name: productName,
+              error: `Bu isimde ürün bulunamadı.${suggestion}`
+            });
+            continue;
+          }
+
+          // Stok güncelle
+          const oldStock = product.stock || 0;
+          await storage.updateProduct(product.id, { stock: newStock });
+
+          updated.push({
+            name: product.name,
+            oldStock,
+            newStock
+          });
+        }
+
+        // Yüklenen dosyayı sil
+        fs.unlinkSync(req.file.path);
+
+        res.json({
+          success: errors.length === 0,
+          message: `${updated.length} ürün güncellendi${errors.length > 0 ? `, ${errors.length} hata bulundu` : ""}`,
+          updated,
+          errors
+        });
+      } catch (err) {
+        console.error("Stock import error:", err);
+        // Dosya varsa sil
+        if (req.file?.path && fs.existsSync(req.file.path)) {
+          fs.unlinkSync(req.file.path);
+        }
+        res.status(500).json({ message: "Stok import işlemi sırasında hata oluştu" });
+      }
+    });
+  });
+
+  // Helper function to find similar product name (simple Levenshtein-like matching)
+  function findSimilarProductName(input: string, productNames: string[]): string | null {
+    const inputLower = input.toLowerCase();
+    let bestMatch: string | null = null;
+    let bestScore = 0;
+
+    for (const name of productNames) {
+      const nameLower = name.toLowerCase();
+
+      // Basit benzerlik skoru: ortak karakter sayısı / max uzunluk
+      const commonChars = countCommonChars(inputLower, nameLower);
+      const maxLen = Math.max(inputLower.length, nameLower.length);
+      const score = commonChars / maxLen;
+
+      if (score > 0.5 && score > bestScore) {
+        bestScore = score;
+        bestMatch = name;
+      }
+    }
+
+    return bestMatch;
+  }
+
+  function countCommonChars(a: string, b: string): number {
+    const bChars = b.split("");
+    let count = 0;
+    for (const char of a) {
+      const idx = bChars.indexOf(char);
+      if (idx !== -1) {
+        count++;
+        bChars.splice(idx, 1);
+      }
+    }
+    return count;
+  }
+
   // Get all orders (admin only)
   app.get("/api/admin/orders", async (req: Request, res: Response) => {
     await requireAdmin(req, res, async () => {
@@ -614,6 +807,475 @@ export async function registerRoutes(
       console.error("Update review error:", err);
       res.status(500).json({ message: "Yorum güncellenirken bir hata oluştu" });
     }
+  });
+
+  // ==================== CHAT ROUTES ====================
+
+  // WebSocket connection tracking
+  const chatClients = new Map<string, Set<WebSocket>>(); // chatSessionId -> connected clients
+  const adminClients = new Set<WebSocket>(); // Admin connections for notifications
+
+  // Initialize WebSocket server
+  const wss = new WebSocketServer({ server: httpServer, path: '/ws/chat' });
+
+  wss.on('connection', (ws, req) => {
+    console.log('[WebSocket] New connection');
+    let currentChatSessionId: string | null = null;
+    let isAdmin = false;
+
+    ws.on('message', async (data) => {
+      try {
+        const message = JSON.parse(data.toString());
+        console.log('[WebSocket] Received:', message.type);
+
+        switch (message.type) {
+          case 'join_session':
+            // User joining their chat session
+            currentChatSessionId = message.chatSessionId;
+            if (currentChatSessionId) {
+              if (!chatClients.has(currentChatSessionId)) {
+                chatClients.set(currentChatSessionId, new Set());
+              }
+              chatClients.get(currentChatSessionId)!.add(ws);
+            }
+            break;
+
+          case 'admin_connect':
+            // Admin connecting to receive notifications
+            isAdmin = true;
+            adminClients.add(ws);
+            // Send initial waiting sessions count
+            const waitingSessions = await storage.getWaitingChatSessions();
+            ws.send(JSON.stringify({
+              type: 'waiting_sessions',
+              sessions: waitingSessions,
+            }));
+            break;
+
+          case 'admin_join_chat':
+            // Admin joining a specific chat session
+            currentChatSessionId = message.chatSessionId;
+            if (currentChatSessionId) {
+              // Update session status
+              await storage.updateChatSessionStatus(
+                currentChatSessionId,
+                ChatStatus.AGENT_MODE,
+                message.agentId
+              );
+
+              // Join the room
+              if (!chatClients.has(currentChatSessionId)) {
+                chatClients.set(currentChatSessionId, new Set());
+              }
+              chatClients.get(currentChatSessionId)!.add(ws);
+
+              // Notify the user that admin joined
+              broadcastToSession(currentChatSessionId, {
+                type: 'agent_joined',
+                agentId: message.agentId,
+              });
+
+              // Notify all admins to update waiting list
+              broadcastToAdmins({
+                type: 'session_taken',
+                chatSessionId: currentChatSessionId,
+              });
+            }
+            break;
+
+          case 'send_message':
+            // Handle message sending
+            if (!currentChatSessionId) break;
+
+            const session = await storage.getChatSession(currentChatSessionId);
+            if (!session) break;
+
+            // Save user/agent message
+            const newMessage = await storage.createChatMessage({
+              chatSessionId: currentChatSessionId,
+              sender: message.sender, // USER or AGENT
+              content: message.content,
+              messageType: 'text',
+            });
+
+            // Broadcast the message to all clients in the session
+            broadcastToSession(currentChatSessionId, {
+              type: 'new_message',
+              message: newMessage,
+            });
+
+            // If sender is USER and session is in BOT_MODE, process with bot
+            if (message.sender === 'USER' && session.status === ChatStatus.BOT_MODE) {
+              // Send typing indicator
+              broadcastToSession(currentChatSessionId, {
+                type: 'bot_typing',
+                isTyping: true,
+              });
+
+              // Process with Gemini AI
+              const botResponse = await processMessage(
+                currentChatSessionId,
+                message.content,
+                { customerEmail: session.customerEmail || undefined }
+              );
+
+              // Stop typing indicator
+              broadcastToSession(currentChatSessionId, {
+                type: 'bot_typing',
+                isTyping: false,
+              });
+
+              // Save bot message
+              const botMessage = await storage.createChatMessage({
+                chatSessionId: currentChatSessionId,
+                sender: 'BOT',
+                content: botResponse.message,
+                messageType: botResponse.messageType,
+                metadata: botResponse.metadata || null,
+              });
+
+              // Broadcast bot response
+              broadcastToSession(currentChatSessionId, {
+                type: 'new_message',
+                message: botMessage,
+              });
+
+              // If bot wants to transfer to agent
+              if (botResponse.shouldTransferToAgent) {
+                await storage.updateChatSessionStatus(
+                  currentChatSessionId,
+                  ChatStatus.WAITING_FOR_AGENT
+                );
+
+                // Notify user
+                broadcastToSession(currentChatSessionId, {
+                  type: 'status_changed',
+                  status: ChatStatus.WAITING_FOR_AGENT,
+                });
+
+                // Notify admins
+                const updatedSession = await storage.getChatSession(currentChatSessionId);
+                broadcastToAdmins({
+                  type: 'new_waiting_session',
+                  session: updatedSession,
+                });
+              }
+            }
+            break;
+
+          case 'typing':
+            // Broadcast typing status
+            if (currentChatSessionId) {
+              broadcastToSession(currentChatSessionId, {
+                type: 'user_typing',
+                sender: message.sender,
+                isTyping: message.isTyping,
+              }, ws);
+            }
+            break;
+
+          case 'close_session':
+            if (currentChatSessionId && isAdmin) {
+              await storage.closeChatSession(currentChatSessionId);
+              clearConversationContext(currentChatSessionId);
+
+              broadcastToSession(currentChatSessionId, {
+                type: 'session_closed',
+              });
+            }
+            break;
+        }
+      } catch (error) {
+        console.error('[WebSocket] Error:', error);
+      }
+    });
+
+    ws.on('close', () => {
+      console.log('[WebSocket] Connection closed');
+      // Clean up
+      if (currentChatSessionId) {
+        chatClients.get(currentChatSessionId)?.delete(ws);
+      }
+      if (isAdmin) {
+        adminClients.delete(ws);
+      }
+    });
+  });
+
+  // Helper function to broadcast to all clients in a chat session
+  function broadcastToSession(chatSessionId: string, data: any, exclude?: WebSocket) {
+    const clients = chatClients.get(chatSessionId);
+    if (!clients) return;
+
+    const message = JSON.stringify(data);
+    clients.forEach((client) => {
+      if (client !== exclude && client.readyState === WebSocket.OPEN) {
+        client.send(message);
+      }
+    });
+  }
+
+  // Helper function to broadcast to all admin clients
+  function broadcastToAdmins(data: any) {
+    const message = JSON.stringify(data);
+    adminClients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(message);
+      }
+    });
+  }
+
+  // REST API Routes for Chat
+
+  // Create or get chat session
+  app.post("/api/chat/session", async (req: Request, res: Response) => {
+    try {
+      const { sessionId, userId, customerName, customerEmail, category } = req.body;
+
+      if (!sessionId) {
+        return res.status(400).json({ message: "sessionId gereklidir" });
+      }
+
+      // Kullanıcı ID'sini belirle (giriş yapmış veya misafir)
+      const currentUserId = userId || req.session.userId || null;
+
+      // Check if there's an existing active session for this user
+      let chatSession = await storage.getChatSessionBySessionId(sessionId, currentUserId);
+
+      if (!chatSession) {
+        // If user is logged in (via req.session or body), try to get their details
+        let finalUserId = currentUserId;
+        let finalCustomerName = customerName;
+        let finalCustomerEmail = customerEmail;
+
+        if (finalUserId) {
+          const user = await storage.getUserById(finalUserId);
+          if (user) {
+            finalUserId = user.id;
+            finalCustomerName = user.name;
+            finalCustomerEmail = user.email;
+          }
+        }
+
+        // Create new session
+        chatSession = await storage.createChatSession(
+          sessionId,
+          finalUserId,
+          finalCustomerName,
+          finalCustomerEmail,
+          category
+        );
+
+        // Create welcome message
+        const welcomeResponse = getWelcomeMessage();
+        await storage.createChatMessage({
+          chatSessionId: chatSession.id,
+          sender: 'BOT',
+          content: welcomeResponse.message,
+          messageType: welcomeResponse.messageType,
+          metadata: welcomeResponse.metadata || null,
+        });
+      }
+
+      // Get messages
+      const messages = await storage.getChatMessages(chatSession.id);
+
+      res.json({ session: chatSession, messages });
+    } catch (err) {
+      console.error("Create chat session error:", err);
+      res.status(500).json({ message: "Sohbet oturumu oluşturulurken bir hata oluştu" });
+    }
+  });
+
+  // Get chat session with messages
+  app.get("/api/chat/session/:id", async (req: Request, res: Response) => {
+    try {
+      const session = await storage.getChatSession(req.params.id);
+      if (!session) {
+        return res.status(404).json({ message: "Sohbet oturumu bulunamadı" });
+      }
+
+      const messages = await storage.getChatMessages(session.id);
+      res.json({ session, messages });
+    } catch (err) {
+      console.error("Get chat session error:", err);
+      res.status(500).json({ message: "Sohbet oturumu alınırken bir hata oluştu" });
+    }
+  });
+
+  // Send message (REST fallback - WebSocket preferred)
+  app.post("/api/chat/send", async (req: Request, res: Response) => {
+    try {
+      const { chatSessionId, content } = req.body;
+
+      if (!chatSessionId || !content) {
+        return res.status(400).json({ message: "chatSessionId ve content gereklidir" });
+      }
+
+      const session = await storage.getChatSession(chatSessionId);
+      if (!session) {
+        return res.status(404).json({ message: "Sohbet oturumu bulunamadı" });
+      }
+
+      // Determine sender
+      let sender = 'USER';
+      if (req.session.userId) {
+        const user = await storage.getUserById(req.session.userId);
+        if (user && user.role === 'admin') {
+          sender = 'AGENT';
+        }
+      }
+
+      // Save message
+      const userMessage = await storage.createChatMessage({
+        chatSessionId,
+        sender,
+        content,
+        messageType: 'text',
+      });
+
+      // If BOT_MODE, get bot response
+      if (session.status === ChatStatus.BOT_MODE) {
+        const botResponse = await processMessage(
+          chatSessionId,
+          content,
+          { customerEmail: session.customerEmail || undefined }
+        );
+
+        const botMessage = await storage.createChatMessage({
+          chatSessionId,
+          sender: 'BOT',
+          content: botResponse.message,
+          messageType: botResponse.messageType,
+          metadata: botResponse.metadata || null,
+        });
+
+        // Handle transfer to agent
+        if (botResponse.shouldTransferToAgent) {
+          await storage.updateChatSessionStatus(chatSessionId, ChatStatus.WAITING_FOR_AGENT);
+        }
+
+        res.json({ userMessage, botMessage, shouldTransferToAgent: botResponse.shouldTransferToAgent });
+      } else {
+        res.json({ userMessage });
+      }
+    } catch (err) {
+      console.error("Send message error:", err);
+      res.status(500).json({ message: "Mesaj gönderilirken bir hata oluştu" });
+    }
+  });
+
+  // Request live agent
+  app.post("/api/chat/request-agent", async (req: Request, res: Response) => {
+    try {
+      const { chatSessionId } = req.body;
+
+      const session = await storage.getChatSession(chatSessionId);
+      if (!session) {
+        return res.status(404).json({ message: "Sohbet oturumu bulunamadı" });
+      }
+
+      await storage.updateChatSessionStatus(chatSessionId, ChatStatus.WAITING_FOR_AGENT);
+
+      // Notify admins via WebSocket
+      broadcastToAdmins({
+        type: 'new_waiting_session',
+        session: await storage.getChatSession(chatSessionId),
+      });
+
+      res.json({ message: "Canlı destek talebi oluşturuldu" });
+    } catch (err) {
+      console.error("Request agent error:", err);
+      res.status(500).json({ message: "Canlı destek talebi oluşturulurken bir hata oluştu" });
+    }
+  });
+
+  // Admin: Get waiting sessions
+  app.get("/api/admin/chat/waiting", async (req: Request, res: Response) => {
+    await requireAdmin(req, res, async () => {
+      try {
+        const sessions = await storage.getWaitingChatSessions();
+
+        // Get last message for each session
+        const sessionsWithLastMessage = await Promise.all(
+          sessions.map(async (session) => {
+            const messages = await storage.getChatMessages(session.id);
+            const lastUserMessage = messages.filter(m => m.sender === 'USER').pop();
+            return {
+              ...session,
+              lastMessage: lastUserMessage?.content || '',
+              messageCount: messages.length,
+            };
+          })
+        );
+
+        res.json(sessionsWithLastMessage);
+      } catch (err) {
+        console.error("Get waiting sessions error:", err);
+        res.status(500).json({ message: "Bekleyen sohbetler alınırken bir hata oluştu" });
+      }
+    });
+  });
+
+  // Admin: Get waiting sessions
+  app.get("/api/admin/chat/waiting", async (req: Request, res: Response) => {
+    await requireAdmin(req, res, async () => {
+      try {
+        const sessions = await storage.getWaitingChatSessions();
+        res.json(sessions);
+      } catch (err) {
+        console.error("Get waiting sessions error:", err);
+        res.status(500).json({ message: "Bekleyen sohbetler alınırken hata oluştu" });
+      }
+    });
+  });
+
+  // Admin: Get active sessions (agent mode)
+  app.get("/api/admin/chat/active", async (req: Request, res: Response) => {
+    await requireAdmin(req, res, async () => {
+      try {
+        const sessions = await storage.getActiveChatSessions();
+        res.json(sessions);
+      } catch (err) {
+        console.error("Get active sessions error:", err);
+        res.status(500).json({ message: "Aktif sohbetler alınırken bir hata oluştu" });
+      }
+    });
+  });
+
+  // Admin: Join chat session
+  app.post("/api/admin/chat/:id/join", async (req: Request, res: Response) => {
+    await requireAdmin(req, res, async () => {
+      try {
+        const session = await storage.updateChatSessionStatus(
+          req.params.id,
+          ChatStatus.AGENT_MODE,
+          req.session.userId
+        );
+
+        // Get messages
+        const messages = await storage.getChatMessages(session.id);
+
+        res.json({ session, messages });
+      } catch (err) {
+        console.error("Join chat session error:", err);
+        res.status(500).json({ message: "Sohbete katılırken bir hata oluştu" });
+      }
+    });
+  });
+
+  // Admin: Close chat session
+  app.post("/api/admin/chat/:id/close", async (req: Request, res: Response) => {
+    await requireAdmin(req, res, async () => {
+      try {
+        const session = await storage.closeChatSession(req.params.id);
+        clearConversationContext(req.params.id);
+        res.json(session);
+      } catch (err) {
+        console.error("Close chat session error:", err);
+        res.status(500).json({ message: "Sohbet kapatılırken bir hata oluştu" });
+      }
+    });
   });
 
   // Seed data (including admin user)

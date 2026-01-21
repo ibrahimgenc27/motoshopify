@@ -36,5 +36,11 @@ export default defineConfig({
       strict: true,
       deny: ["**/.*"],
     },
+    hmr: {
+      // HMR WebSocket bağlantısı için doğru port ve host ayarları
+      port: 5173,
+      host: 'localhost',
+      protocol: 'ws',
+    },
   },
 });

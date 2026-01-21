@@ -17,6 +17,7 @@ import MyOrders from "@/pages/MyOrders";
 import OrderTracking from "@/pages/OrderTracking";
 import OrderComplete from "@/pages/OrderComplete";
 import PaymentNotification from "@/pages/PaymentNotification";
+import { ChatWidget } from "@/components/ChatWidget";
 
 function Router() {
   return (
@@ -45,10 +46,11 @@ function App() {
       <TooltipProvider>
         <Toaster />
         <Router />
+        {/* Chat Widget - Tüm sayfalarda görünür */}
+        <ChatWidget />
       </TooltipProvider>
     </QueryClientProvider>
   );
 }
 
 export default App;
-

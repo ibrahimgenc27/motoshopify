@@ -134,3 +134,52 @@ export type InsertReview = z.infer<typeof insertReviewSchema>;
 export const insertOrderNoteSchema = createInsertSchema(orderNotes).omit({ id: true, createdAt: true, updatedAt: true });
 export type OrderNote = typeof orderNotes.$inferSelect;
 export type InsertOrderNote = z.infer<typeof insertOrderNoteSchema>;
+
+// ============================================
+// CHAT SYSTEM - Hibrit Bot + Canlı Destek
+// ============================================
+
+// Chat oturumu - ana durum makinesi
+export const chatSessions = pgTable("chat_sessions", {
+  id: text("id").primaryKey(), // UUID
+  sessionId: text("session_id").notNull(), // Cookie-based session (anonim kullanıcılar için)
+  userId: integer("user_id"), // Üye ise ID, değilse null
+  category: text("category"), // Chat category (order, product, return, payment, other)
+  status: text("status").notNull().default("BOT_MODE"), // BOT_MODE | WAITING_FOR_AGENT | AGENT_MODE | CLOSED
+  agentId: integer("agent_id"), // Sohbeti devralan admin ID
+  customerName: text("customer_name"), // Kullanıcı adı (varsa)
+  customerEmail: text("customer_email"), // Kullanıcı email (varsa)
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// Chat mesajları
+export const chatMessages = pgTable("chat_messages", {
+  id: text("id").primaryKey(), // UUID
+  chatSessionId: text("chat_session_id").notNull(),
+  sender: text("sender").notNull(), // USER | BOT | AGENT
+  content: text("content").notNull(),
+  messageType: text("message_type").notNull().default("text"), // text | product_card | order_info | quick_reply
+  metadata: jsonb("metadata"), // Flexible JSON for products, orders, quickReplies
+  isRead: boolean("is_read").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// Chat schemas and types
+export const insertChatSessionSchema = createInsertSchema(chatSessions).omit({ createdAt: true, updatedAt: true });
+export const insertChatMessageSchema = createInsertSchema(chatMessages).omit({ createdAt: true });
+
+export type ChatSession = typeof chatSessions.$inferSelect;
+export type InsertChatSession = z.infer<typeof insertChatSessionSchema>;
+export type ChatMessage = typeof chatMessages.$inferSelect;
+export type InsertChatMessage = z.infer<typeof insertChatMessageSchema>;
+
+// Chat status enum for type safety
+export const ChatStatus = {
+  BOT_MODE: "BOT_MODE",
+  WAITING_FOR_AGENT: "WAITING_FOR_AGENT",
+  AGENT_MODE: "AGENT_MODE",
+  CLOSED: "CLOSED",
+} as const;
+
+export type ChatStatusType = typeof ChatStatus[keyof typeof ChatStatus];
